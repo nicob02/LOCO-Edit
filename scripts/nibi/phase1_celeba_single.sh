@@ -8,8 +8,9 @@
 #SBATCH --gpus=h100:1
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
-# Uncomment and set your allocation if required:
-#SBATCH --account=def-dennisg_cpu
+# RAP group name from: sbatch (error lists your accounts) or CCDB → My Resources → Group Name
+# Override on CLI: sbatch --account=def-eporte2 ...
+#SBATCH --account=def-dennisg
 
 set -euo pipefail
 

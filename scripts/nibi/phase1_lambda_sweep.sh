@@ -8,8 +8,7 @@
 #SBATCH --gpus=h100:1
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
-# Uncomment if your site requires it:
-#SBATCH --account=def-dennisg_cpu
+#SBATCH --account=def-dennisg
 
 set -euo pipefail
 

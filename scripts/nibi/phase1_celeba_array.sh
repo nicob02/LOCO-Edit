@@ -9,8 +9,7 @@
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.err
 #SBATCH --array=0-19
-# Uncomment if your site requires it:
-#SBATCH --account=def-dennisg_cpu
+#SBATCH --account=def-dennisg
 
 set -euo pipefail
 
