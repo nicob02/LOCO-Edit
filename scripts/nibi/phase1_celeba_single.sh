@@ -22,7 +22,14 @@ module load python/3.11.5
 VENV="${LOCO_VENV:-$HOME/venvs/ditcap}"
 source "${VENV}/bin/activate"
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Under sbatch the script is copied to a spool dir, so BASH_SOURCE points
+# somewhere we can't write. Prefer SLURM_SUBMIT_DIR (the dir you ran
+# `sbatch` from); fall back to BASH_SOURCE for interactive/local runs.
+if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+  REPO_ROOT="$SLURM_SUBMIT_DIR"
+else
+  REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+fi
 cd "$REPO_ROOT"
 mkdir -p logs
 
