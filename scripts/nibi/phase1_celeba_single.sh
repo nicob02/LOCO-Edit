@@ -26,12 +26,13 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 mkdir -p logs
 
-CELEBA_ROOT="${1:?Usage: sbatch [...] phase1_celeba_single.sh /path/to/CelebAMask-HQ [sample_idx] [choose_sem] [x_space_guidance_scale] [note]}"
+CELEBA_ROOT="${1:?Usage: sbatch [...] phase1_celeba_single.sh /path/to/CelebAMask-HQ [sample_idx] [choose_sem] [x_space_guidance_scale] [note] [null_space_projection]}"
 
 SAMPLE_IDX="${2:-4729}"
 CHOOSE_SEM="${3:-l_eye}"
 GUIDE_SCALE="${4:-0.5}"
 NOTE="${5:-phase1}"
+NULL_SPACE="${6:-True}"   # True | False
 
 export HF_HOME="${HF_HOME:-$REPO_ROOT/.hf_cache}"
 export TRANSFORMERS_CACHE="$HF_HOME"
@@ -55,7 +56,7 @@ python main.py \
   --edit_t 0.6 \
   --run_edit_null_space_projection True \
   --choose_sem "$CHOOSE_SEM" \
-  --null_space_projection True \
+  --null_space_projection "$NULL_SPACE" \
   --use_mask True \
   --pca_rank_null 5 \
   --pca_rank 1 \
@@ -67,3 +68,4 @@ python main.py \
   --cache_folder "$HF_HOME"
 
 echo "Done. Results under: $REPO_ROOT/src/runs/CelebA_HQ_HF-CelebA_HQ_mask-${NOTE}/results/sample_idx${SAMPLE_IDX}/"
+echo "null_space_projection=${NULL_SPACE}, x_space_guidance_scale=${GUIDE_SCALE}, choose_sem=${CHOOSE_SEM}"
