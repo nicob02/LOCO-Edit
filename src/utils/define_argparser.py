@@ -138,7 +138,7 @@ def str2bool(v):
 def preset(args):
     # reproducatibility
     if args.seed == 0:
-        args.seed = torch.randint(2**32, ())
+        args.seed = int(torch.randint(2**32, ()).item())
     seed_everything(args.seed)
     ###############
     # config file #
@@ -248,7 +248,8 @@ def preset(args):
 
     return args
 
-def seed_everything(seed: int):
+def seed_everything(seed):
+    seed = int(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
     random.seed(seed)
