@@ -33,8 +33,8 @@ class CelebAMaskDataLoader(Dataset):
         }
         self.sem2idx = {v: k for k, v in self.idx2sem.items()}
         self.save_path = save_path
-        if not os.path.exists(self.save_path):
-            os.makedirs(self.save_path)
+        if self.save_path is not None:
+            os.makedirs(self.save_path, exist_ok=True)
         self.dataset = self._parse_CelebAMask()
         self.res = res
         self.transform = tfs.Compose([

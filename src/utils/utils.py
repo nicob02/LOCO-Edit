@@ -121,12 +121,26 @@ def get_custom_diffusion_model(args):
 
     elif args.model_name in ["CelebA_HQ_HF", "LSUN_bedroom_HF", "LSUN_church_HF", "FFHQ_HF"]:
         model = DDIMPipeline.from_pretrained(model_id)
-        # NOTE: dead line from upstream — `get_res_uncond` is never defined and
-        # `model.unet.get_res` is never read. Removed to unblock loading.
+        # NOTE 1: dead line from upstream — `get_res_uncond` is never defined
+        # and `model.unet.get_res` is never read. Removed.
+        # NOTE 2: DO NOT enable xformers here. LOCO computes Jacobian-vector
+        # products via torch.func.jacfwd (forward-mode AD), which the xformers
+        # memory-efficient attention kernel does not implement (see
+        # "NotImplementedError: Trying to use forward AD with
+        # _efficient_attention_forward").
         try:
-            model.enable_xformers_memory_efficient_attention()
-        except (ModuleNotFoundError, ImportError, ValueError) as exc:
-            print(f"[utils] xformers disabled: {exc}")
+            model.disable_xformers_memory_efficient_attention()
+        except Exception:
+            pass
+        # NOTE 3: force plain attention processor (no xformers, no SDPA).
+        # SDPA can silently dispatch to kernels that lack forward-AD support;
+        # plain AttnProcessor is built from baddbmm + softmax + bmm which
+        # unambiguously supports jvp.
+        try:
+            from diffusers.models.attention_processor import AttnProcessor
+            model.unet.set_attn_processor(AttnProcessor())
+        except Exception as exc:
+            print(f"[utils] could not force plain AttnProcessor: {exc}")
 
 
     else:
