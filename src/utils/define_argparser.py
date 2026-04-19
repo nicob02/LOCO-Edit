@@ -122,6 +122,27 @@ def parse_args():
     parser.add_argument('--num_inference_steps',         type=int,       default=3,          required=False)
 
     parser.add_argument('--random_edit',                                type=str2bool,  default='False', required=False)
+
+    # ----- Phase 2 / Attack A (direction instability via PGD on x_t) -----
+    parser.add_argument('--run_attack_a',     type=str2bool, default='False', required=False,
+                        help='Phase 2: run PGD attack on x_t to rotate the discovered editing direction.')
+    parser.add_argument('--attack_eps',       type=float,    default=0.02,    required=False,
+                        help='Per-coordinate (linf) or total (l2) radius of the perturbation ball.')
+    parser.add_argument('--attack_alpha',     type=float,    default=0.005,   required=False,
+                        help='PGD step size.')
+    parser.add_argument('--attack_steps',     type=int,      default=40,      required=False,
+                        help='Number of PGD iterations.')
+    parser.add_argument('--attack_norm',      type=str,      default='linf',  required=False,
+                        choices=['linf', 'l2'],
+                        help='Threat-model ball geometry.')
+    parser.add_argument('--attack_init',      type=str,      default='zero',  required=False,
+                        choices=['zero', 'rand'],
+                        help='Initialisation of delta inside the eps-ball.')
+    parser.add_argument('--attack_eps_sweep', type=str,      default='',      required=False,
+                        help='Optional comma-separated list of eps values, e.g. "0.005,0.01,0.02".')
+    parser.add_argument('--attack_render_edit', type=str2bool, default='True', required=False,
+                        help='After the attack, run the full LOCO edit at x_t + delta_adv to render a comparison strip.')
+
     args = parser.parse_args()
     return args
 
