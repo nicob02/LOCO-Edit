@@ -124,21 +124,45 @@ def get_custom_diffusion_model(args):
         # NOTE 1: dead line from upstream — `get_res_uncond` is never defined
         # and `model.unet.get_res` is never read. Removed.
         # NOTE 2: DO NOT enable xformers here. LOCO computes Jacobian-vector
-        # products via torch.func.jacfwd (forward-mode AD), which the xformers
-        # memory-efficient attention kernel does not implement (see
-        # "NotImplementedError: Trying to use forward AD with
-        # _efficient_attention_forward").
+        # products via torch.func.jacfwd (forward-mode AD). Neither the
+        # xformers memory-efficient kernel nor the SDPA "flash" / "efficient"
+        # backends implement a forward-AD rule, so the moment LOCO does its
+        # first JVP we get:
+        #   NotImplementedError: Trying to use forward AD with
+        #   _scaled_dot_product_efficient_attention ...
+        # Fix = (a) globally force SDPA to fall back to the pure "math" kernel,
+        # which is plain baddbmm+softmax+bmm and supports jvp, and
+        # (b) walk every Attention submodule and replace its `.processor`
+        # with the plain AttnProcessor so SDPA is never invoked at all.
+        # UNet2DModel does NOT expose `set_attn_processor` (that lives on
+        # UNet2DConditionModel), which is why a previous attempt silently
+        # failed — we have to set `.processor` directly on each module.
         try:
             model.disable_xformers_memory_efficient_attention()
         except Exception:
             pass
-        # NOTE 3: force plain attention processor (no xformers, no SDPA).
-        # SDPA can silently dispatch to kernels that lack forward-AD support;
-        # plain AttnProcessor is built from baddbmm + softmax + bmm which
-        # unambiguously supports jvp.
+        # (a) global SDPA backend selection — math-only.
         try:
-            from diffusers.models.attention_processor import AttnProcessor
-            model.unet.set_attn_processor(AttnProcessor())
+            torch.backends.cuda.enable_flash_sdp(False)
+            torch.backends.cuda.enable_mem_efficient_sdp(False)
+            torch.backends.cuda.enable_math_sdp(True)
+            if hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
+                torch.backends.cuda.enable_cudnn_sdp(False)
+        except Exception as exc:
+            print(f"[utils] could not pin SDPA to math backend: {exc}")
+        # (b) per-module override — directly replace `.processor` with plain
+        # AttnProcessor on every Attention submodule.
+        try:
+            from diffusers.models.attention_processor import (
+                Attention as DiffusersAttention,
+                AttnProcessor,
+            )
+            n_patched = 0
+            for sub in model.unet.modules():
+                if isinstance(sub, DiffusersAttention):
+                    sub.processor = AttnProcessor()
+                    n_patched += 1
+            print(f"[utils] forced plain AttnProcessor on {n_patched} attention block(s)")
         except Exception as exc:
             print(f"[utils] could not force plain AttnProcessor: {exc}")
 
