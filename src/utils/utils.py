@@ -120,9 +120,13 @@ def get_custom_diffusion_model(args):
         model.load_state_dict(init_ckpt)
 
     elif args.model_name in ["CelebA_HQ_HF", "LSUN_bedroom_HF", "LSUN_church_HF", "FFHQ_HF"]:
-        model = DDIMPipeline.from_pretrained(model_id) 
-        model.unet.get_res    = types.MethodType(get_res_uncond, model.unet)
-        model.enable_xformers_memory_efficient_attention()
+        model = DDIMPipeline.from_pretrained(model_id)
+        # NOTE: dead line from upstream — `get_res_uncond` is never defined and
+        # `model.unet.get_res` is never read. Removed to unblock loading.
+        try:
+            model.enable_xformers_memory_efficient_attention()
+        except (ModuleNotFoundError, ImportError, ValueError) as exc:
+            print(f"[utils] xformers disabled: {exc}")
 
 
     else:
