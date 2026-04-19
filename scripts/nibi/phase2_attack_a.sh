@@ -1,12 +1,14 @@
 #!/bin/bash
-#SBATCH --account=def-dennisg
-#SBATCH --gres=gpu:1
+#SBATCH --job-name=loco_p2_attackA
+#SBATCH --time=04:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64G
-#SBATCH --time=04:00:00
-#SBATCH --job-name=loco_p2_attackA
-#SBATCH --output=logs/loco_p2_attackA_%j.out
-#SBATCH --error=logs/loco_p2_attackA_%j.err
+#SBATCH --gpus=h100:1
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
+#SBATCH --account=def-dennisg
 
 set -euo pipefail
 
@@ -34,6 +36,13 @@ set -euo pipefail
 #   $8  EPS_SWEEP    - comma-separated list when $4=="SWEEP", e.g. "0.005,0.01,0.02"
 # -----------------------------------------------------------------------------
 
+module --force purge
+module load StdEnv/2023
+module load python/3.11.5
+
+VENV="${LOCO_VENV:-$HOME/venvs/ditcap}"
+source "${VENV}/bin/activate"
+
 if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
   REPO_ROOT="$SLURM_SUBMIT_DIR"
 else
@@ -51,12 +60,9 @@ STEPS="${6:-40}"
 NOTE="${7:-phase2_attackA}"
 EPS_SWEEP="${8:-}"
 
-source ~/venvs/ditcap/bin/activate
-
-export HF_HOME="$REPO_ROOT/.hf_cache"
-export HUGGINGFACE_HUB_CACHE="$HF_HOME"
-export TORCH_HUB="$REPO_ROOT/.torch_hub"
-mkdir -p "$HF_HOME" "$TORCH_HUB"
+export HF_HOME="${HF_HOME:-$REPO_ROOT/.hf_cache}"
+export TRANSFORMERS_CACHE="$HF_HOME"
+mkdir -p "$HF_HOME"
 
 # Step size: 25% of eps is a sane default for PGD.
 if [[ "$EPS" == "SWEEP" ]]; then
@@ -80,7 +86,7 @@ echo "STEPS         : $STEPS"
 echo "ALPHA         : $ALPHA"
 echo "NOTE          : $NOTE"
 
-cd src
+cd "$REPO_ROOT/src"
 
 python tools/phase2_attack_a.py \
   --sh_file_name phase2_attack_a.sh \
