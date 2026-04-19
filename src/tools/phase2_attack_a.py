@@ -186,6 +186,18 @@ def main():
     xt, t, t_idx = edit.DDIMforwardsteps(xT, t_start_idx=0, t_end_idx=edit.edit_t_idx)
     assert t_idx == edit.edit_t_idx, f"DDIM forward landed at idx {t_idx}, expected {edit.edit_t_idx}"
 
+    # DDIMforwardsteps returns xt on self.buffer_device (CPU); t lives on GPU.
+    # local_encoder_decoder_pullback_xt builds its random basis on x.device, so if
+    # xt is on CPU we end up calling the GPU UNet with CPU inputs -> the
+    # `mat1 is on cpu, ... cuda:0` crash inside time_embedding.linear_1.
+    # Mirror what run_edit_null_space_projection does: move xt + mask to GPU,
+    # and make sure t is on the same device too. Done once, here.
+    xt = xt.to(device=edit.device, dtype=edit.dtype)
+    if torch.is_tensor(t):
+        t = t.to(device=edit.device)
+    if torch.is_tensor(mask):
+        mask = mask.to(device=edit.device)
+
     # Step 2: load Phase-1 cached basis from this run's result_folder.
     save_dir = os.path.join(
         edit.result_folder, "basis",
