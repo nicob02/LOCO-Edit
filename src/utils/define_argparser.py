@@ -182,7 +182,12 @@ def preset(args):
         direct = 'i'
         if args.x_space_guidance_direct:
             direct = 'd'
+        # NOTE: include `--note` in exp folder so different runs don't clobber
+        # each other (upstream dropped it on this branch, which silently merged
+        # all runs into one folder).
         args.exp = f'{args.model_name}-{args.dataset_name}'
+        if getattr(args, 'note', None):
+            args.exp = f'{args.exp}-{args.note}'
         args.exp_folder = os.path.join(args.result_folder, args.exp)
 
     ##########
