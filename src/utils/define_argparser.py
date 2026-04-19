@@ -189,9 +189,31 @@ def preset(args):
     # folder #    
     ##########
     os.makedirs(args.exp_folder, exist_ok=True)
-    shutil.copy(os.path.join('scripts', args.sh_file_name), os.path.join(args.exp_folder, args.sh_file_name))
-    shutil.copy(os.path.join('utils', 'define_argparser.py'), os.path.join(args.exp_folder, 'define_argparser.py'))
-    shutil.copy('main.py', os.path.join(args.exp_folder, 'main.py'))
+
+    # Provenance copies: archive the launch script + key source files into the
+    # run folder. Treat missing files as a warning, not a crash, and search a
+    # few likely locations so nested script layouts (e.g. scripts/nibi/...) work.
+    def _safe_copy(candidates, dst_dir):
+        for src in candidates:
+            if os.path.isfile(src):
+                dst = os.path.join(dst_dir, os.path.basename(src))
+                try:
+                    shutil.copy(src, dst)
+                except Exception as exc:
+                    print(f"[preset] warn: could not copy {src!r} -> {dst!r}: {exc}")
+                return
+        print(f"[preset] warn: none of the provenance candidates exist: {candidates}")
+
+    _safe_copy(
+        [
+            os.path.join('scripts', args.sh_file_name),
+            os.path.join('scripts', 'nibi', args.sh_file_name),
+            args.sh_file_name,
+        ],
+        args.exp_folder,
+    )
+    _safe_copy([os.path.join('utils', 'define_argparser.py')], args.exp_folder)
+    _safe_copy(['main.py'], args.exp_folder)
 
     args.obs_folder    = os.path.join(args.exp_folder, 'obs')
     args.result_folder = os.path.join(args.exp_folder, 'results')
