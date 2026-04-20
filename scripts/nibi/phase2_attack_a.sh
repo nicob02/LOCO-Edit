@@ -34,6 +34,10 @@ set -euo pipefail
 #   $6  STEPS        - number of PGD iterations
 #   $7  NOTE         - exp folder suffix (used by define_argparser to separate runs)
 #   $8  EPS_SWEEP    - comma-separated list when $4=="SWEEP", e.g. "0.005,0.01,0.02"
+#   $9  BASIS_SRC    - optional: absolute path to a `local_basis-*` folder (or any
+#                      parent thereof) from Phase 1 whose vT-modify / vT-null we
+#                      want to re-use. Strongly recommended: avoids ~5 min of
+#                      on-node GPM recompute and the associated OOM risk.
 # -----------------------------------------------------------------------------
 
 module --force purge
@@ -59,10 +63,15 @@ NORM="${5:-linf}"
 STEPS="${6:-40}"
 NOTE="${7:-phase2_attackA}"
 EPS_SWEEP="${8:-}"
+BASIS_SRC="${9:-}"
 
 export HF_HOME="${HF_HOME:-$REPO_ROOT/.hf_cache}"
 export TRANSFORMERS_CACHE="$HF_HOME"
 mkdir -p "$HF_HOME"
+
+# Cut allocator fragmentation that caused 77 GB → OOM when two GPMs ran
+# back-to-back in the same process. Safe to leave on globally.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 # Step size: 25% of eps is a sane default for PGD.
 if [[ "$EPS" == "SWEEP" ]]; then
@@ -85,6 +94,8 @@ echo "NORM          : $NORM"
 echo "STEPS         : $STEPS"
 echo "ALPHA         : $ALPHA"
 echo "NOTE          : $NOTE"
+echo "BASIS_SRC     : ${BASIS_SRC:-<none>}"
+echo "PYTORCH_CUDA_ALLOC_CONF : $PYTORCH_CUDA_ALLOC_CONF"
 
 cd "$REPO_ROOT/src"
 
@@ -120,4 +131,5 @@ python tools/phase2_attack_a.py \
   --attack_steps "$STEPS" \
   --attack_norm "$NORM" \
   --attack_init zero \
-  --attack_render_edit True
+  --attack_render_edit True \
+  --attack_basis_src "$BASIS_SRC"

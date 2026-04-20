@@ -142,6 +142,10 @@ def parse_args():
                         help='Optional comma-separated list of eps values, e.g. "0.005,0.01,0.02".')
     parser.add_argument('--attack_render_edit', type=str2bool, default='True', required=False,
                         help='After the attack, run the full LOCO edit at x_t + delta_adv to render a comparison strip.')
+    parser.add_argument('--attack_basis_src',   type=str,      default='',      required=False,
+                        help='Optional path to an existing `basis/local_basis-*` folder (or any parent '
+                             'directory thereof) produced by Phase 1. If set, the script reuses the '
+                             'cached vT-modify / vT-null tensors from there instead of recomputing them.')
 
     args = parser.parse_args()
     return args

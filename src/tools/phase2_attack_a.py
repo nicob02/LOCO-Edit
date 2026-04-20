@@ -35,6 +35,8 @@ under src/runs/<exp>/results/sample_idx<idx>/basis/local_basis-...).
 
 from __future__ import annotations
 
+import gc
+import glob
 import json
 import os
 import sys
@@ -92,6 +94,44 @@ def _project_to_v_clean_subspace(vT_modify, vT_null_top):
     vT = vT_modify - proj
     vT = vT / vT.norm(dim=1, keepdim=True).clamp(min=1e-12)
     return vT
+
+
+def _find_basis_dir(args, edit, basis_rel: str):
+    """Find an existing local_basis folder to re-use instead of recomputing.
+
+    Priority:
+      1. this run's own result_folder (default, matches on first resubmit)
+      2. --attack_basis_src, which may point at any ancestor of the basis dir
+      3. glob: any sibling run under the CelebA_HQ_HF-CelebA_HQ_mask* tree with
+         a matching sample_idx + mask basis folder already written to disk.
+    Returns an absolute folder path, or None if nothing matches.
+    """
+    candidates = []
+
+    primary = os.path.join(edit.result_folder, basis_rel)
+    candidates.append(primary)
+
+    src = getattr(args, "attack_basis_src", "")
+    if src:
+        if os.path.isdir(src) and os.path.basename(src.rstrip("/")).startswith("local_basis-"):
+            candidates.append(src)
+        else:
+            candidates.append(os.path.join(src, basis_rel))
+            candidates.append(os.path.join(src, "basis", os.path.basename(basis_rel)))
+
+    pattern = os.path.join(
+        "src", "runs",
+        "CelebA_HQ_HF-CelebA_HQ_mask*",
+        "results",
+        f"sample_idx{args.sample_idx}",
+        basis_rel,
+    )
+    candidates.extend(sorted(glob.glob(pattern)))
+
+    for cand in candidates:
+        if cand and os.path.isdir(cand):
+            return cand
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -198,29 +238,67 @@ def main():
     if torch.is_tensor(mask):
         mask = mask.to(device=edit.device)
 
-    # Step 2: load Phase-1 cached basis from this run's result_folder.
-    save_dir = os.path.join(
-        edit.result_folder, "basis",
-        f"local_basis-{edit.edit_t}T-select-mask-{args.choose_sem}",
+    # Step 2: load the cached Phase-1 basis if at all possible; recompute only
+    # as a last resort (re-running both GPMs back-to-back in the same process
+    # has repeatedly OOM'd the 80 GB H100 because
+    # `torch.autograd.functional.jacobian` holds `pca_rank` full UNet
+    # activation graphs and the first GPM's allocator fragments never release).
+    basis_rel = os.path.join(
+        "basis", f"local_basis-{edit.edit_t}T-select-mask-{args.choose_sem}",
     )
-    vT_modify_path = os.path.join(save_dir, f"vT-modify-pca-rank-{args.pca_rank}.pt")
-    vT_null_path   = os.path.join(save_dir, f"vT-null-{args.pca_rank_null}.pt")
+    save_dir_own = os.path.join(edit.result_folder, basis_rel)
 
-    if not (os.path.exists(vT_modify_path) and os.path.exists(vT_null_path)):
-        print(f"[attack-a] cached basis not found in {save_dir!r}; computing now (~5 min)")
-        os.makedirs(save_dir, exist_ok=True)
-        u_m, s_m, vT_modify_t = edit.local_encoder_decoder_pullback_xt(
+    vT_modify_name = f"vT-modify-pca-rank-{args.pca_rank}.pt"
+    vT_null_name   = f"vT-null-{args.pca_rank_null}.pt"
+
+    cached_dir = _find_basis_dir(args, edit, basis_rel)
+    vT_modify_path = None
+    vT_null_path = None
+    if cached_dir is not None:
+        cand_m = os.path.join(cached_dir, vT_modify_name)
+        cand_n = os.path.join(cached_dir, vT_null_name)
+        if os.path.exists(cand_m) and os.path.exists(cand_n):
+            vT_modify_path = cand_m
+            vT_null_path = cand_n
+            print(f"[attack-a] re-using cached basis from {cached_dir!r}")
+
+    if vT_modify_path is None:
+        print(f"[attack-a] no cached basis found. Candidates tried: "
+              f"(1) {save_dir_own!r}  "
+              f"(2) --attack_basis_src={getattr(args, 'attack_basis_src', '')!r}  "
+              f"(3) glob src/runs/CelebA_HQ_HF-CelebA_HQ_mask*/results/sample_idx{args.sample_idx}/{basis_rel}")
+        print(f"[attack-a] falling back to on-the-fly GPM. "
+              f"Using chunk_size=1 and aggressive cache clearing to avoid OOM.")
+        os.makedirs(save_dir_own, exist_ok=True)
+        vT_modify_path = os.path.join(save_dir_own, vT_modify_name)
+        vT_null_path   = os.path.join(save_dir_own, vT_null_name)
+
+        _, _, vT_modify_t = edit.local_encoder_decoder_pullback_xt(
             x=xt, t=t, op="mid", block_idx=0,
-            pca_rank=args.pca_rank, min_iter=10, max_iter=50,
+            pca_rank=args.pca_rank, chunk_size=1,
+            min_iter=10, max_iter=50,
             convergence_threshold=1e-4, mask=mask, noise=False,
         )
-        u_n, s_n, vT_null_t = edit.local_encoder_decoder_pullback_xt(
+        torch.save(vT_modify_t.detach().cpu(), vT_modify_path)
+        del vT_modify_t
+        gc.collect()
+        torch.cuda.empty_cache()
+        if hasattr(torch.cuda, "ipc_collect"):
+            torch.cuda.ipc_collect()
+        print(f"[attack-a] after modify GPM: CUDA mem allocated = "
+              f"{torch.cuda.memory_allocated() / 1e9:.2f} GB, reserved = "
+              f"{torch.cuda.memory_reserved() / 1e9:.2f} GB")
+
+        _, _, vT_null_t = edit.local_encoder_decoder_pullback_xt(
             x=xt, t=t, op="mid", block_idx=0,
-            pca_rank=args.pca_rank_null, min_iter=10, max_iter=50,
+            pca_rank=args.pca_rank_null, chunk_size=1,
+            min_iter=10, max_iter=50,
             convergence_threshold=1e-4, mask=~mask, noise=False,
         )
-        torch.save(vT_modify_t, vT_modify_path)
-        torch.save(vT_null_t, vT_null_path)
+        torch.save(vT_null_t.detach().cpu(), vT_null_path)
+        del vT_null_t
+        gc.collect()
+        torch.cuda.empty_cache()
 
     vT_modify = torch.load(vT_modify_path, map_location=edit.device).to(edit.dtype)
     vT_null   = torch.load(vT_null_path,   map_location=edit.device).to(edit.dtype)
