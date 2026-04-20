@@ -147,6 +147,22 @@ def parse_args():
                              'directory thereof) produced by Phase 1. If set, the script reuses the '
                              'cached vT-modify / vT-null tensors from there instead of recomputing them.')
 
+    # ----- Phase 2 / Attack B (image-space PGD on x_0) -----
+    parser.add_argument('--run_attack_b',           type=str2bool, default='False', required=False,
+                        help='Phase 2: run PGD attack on the *input image* x_0 to break LOCO '
+                             'after DDIM inversion + forward. Threat model: attacker controls '
+                             'uploaded pixels with ||delta_img||_inf <= eps_img.')
+    parser.add_argument('--attack_b_eps_img',       type=float,    default=0.031,   required=False,
+                        help='L_inf radius of the image-space perturbation in the native [-1, 1] '
+                             'pixel range. Default 0.031 = 8/255 in [-1,1] units, which is 4/255 '
+                             'in the usual [0,1] convention - the canonical adversarial budget.')
+    parser.add_argument('--attack_b_alpha_img',     type=float,    default=0.005,   required=False,
+                        help='PGD step size in image-space units.')
+    parser.add_argument('--attack_b_steps',         type=int,      default=40,      required=False,
+                        help='Number of image-space PGD iterations.')
+    parser.add_argument('--attack_b_eps_sweep',     type=str,      default='',      required=False,
+                        help='Optional comma-separated sweep over eps_img, e.g. "0.004,0.008,0.016,0.031,0.063".')
+
     args = parser.parse_args()
     return args
 
