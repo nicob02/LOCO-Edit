@@ -381,7 +381,8 @@ def main():
             print(f"[attack-a] rendering post-attack edit strip at eps={eps:g} ...")
             try:
                 _render_attacked_edit(edit, xt, delta, t, mask, v_adv,
-                                      out_dir=out_dir, args=args)
+                                      out_dir=out_dir, args=args,
+                                      eps=eps, label="attackA")
             except Exception as exc:
                 print(f"[attack-a] WARN: render_attacked_edit failed: {exc}")
 
@@ -399,13 +400,19 @@ def main():
         print(f"[attack-a] sweep summary -> {sweep_csv}")
 
 
-def _render_attacked_edit(edit, xt, delta, t, mask, v_adv, *, out_dir, args):
+def _render_attacked_edit(edit, xt, delta, t, mask, v_adv, *, out_dir, args,
+                          eps=None, label="attackA"):
     """Apply the (post-attack) editing direction at x_t + delta and save a strip.
 
     This reuses edit.x_space_guidance_direct + DDIMforwardsteps the same way
     run_edit_null_space_projection does. The only differences are:
       - we start from the attacked latent x_t + delta, not from x_t,
       - we use v_adv (the rotated direction) instead of the clean direction.
+
+    Previously this function used `args.attack_eps` to build EXP_NAME, which
+    is FROZEN at argparse time: during a sweep that read the same file for
+    every eps and every PNG got overwritten. Pass `eps` (the per-iteration
+    value) explicitly instead.
     """
     import torchvision.utils as tvu
     from tqdm import tqdm
@@ -432,13 +439,14 @@ def _render_attacked_edit(edit, xt, delta, t, mask, v_adv, *, out_dir, args):
         xts[direction] = xt_dir
 
     xt_full = torch.cat([xts[-1].flip(dims=[0])[:-1], xts[1]], dim=0)
+    eps_tag = f"eps{eps:g}" if eps is not None else f"eps{args.attack_eps:g}"
     edit.EXP_NAME = (
-        f"attackA-{args.sample_idx}-{args.choose_sem}-eps{args.attack_eps:g}"
+        f"{label}-{args.sample_idx}-{args.choose_sem}-{eps_tag}"
         f"-{args.attack_norm}-edit_strip"
     )
     edit.DDIMforwardsteps(xt_full, t_start_idx=edit.edit_t_idx,
                           t_end_idx=-1, performance_boosting=True)
-    print(f"[attack-a] saved attacked edit strip under {edit.result_folder} "
+    print(f"[{label}] saved attacked edit strip under {edit.result_folder} "
           f"with EXP_NAME={edit.EXP_NAME}")
 
 

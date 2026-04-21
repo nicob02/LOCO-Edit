@@ -163,6 +163,20 @@ def parse_args():
     parser.add_argument('--attack_b_eps_sweep',     type=str,      default='',      required=False,
                         help='Optional comma-separated sweep over eps_img, e.g. "0.004,0.008,0.016,0.031,0.063".')
 
+    # ----- Phase 2 post-hoc tools (locality / transfer) -----
+    parser.add_argument('--attack_type',  type=str, default='B', required=False,
+                        choices=['A', 'B'],
+                        help='Which attack family to post-process (A=latent, B=image).')
+    parser.add_argument('--sweep_dir',    type=str, default='', required=False,
+                        help='Directory containing attack run subfolders. Auto-discovered if empty.')
+    parser.add_argument('--locality_lambda', type=float, default=None, required=False,
+                        help='Override edit magnitude for locality (defaults to LOCO max lambda).')
+    # Transfer-attack args: perturb is taken from --attack_b_result; targets listed here.
+    parser.add_argument('--attack_b_result', type=str, default='', required=False,
+                        help='Path to an attackB_result.pt produced on the SOURCE sample.')
+    parser.add_argument('--transfer_targets', type=str, default='', required=False,
+                        help='Comma-separated list of target sample indices, e.g. "1000,2000,3000".')
+
     args = parser.parse_args()
     return args
 

@@ -336,6 +336,22 @@ def main():
         xt_adv, v_adv, cos_true = verify_misalignment_b(
             edit, x0_adv, v_clean, vT_null_top, mask, pca_rank=args.pca_rank,
         )
+
+        # Effective latent-space footprint: the actual delta_xt = x_t_adv - x_t_clean
+        # that the full nonlinear DDIM inversion + forward produces from delta_img.
+        # This is the *fair-comparison* budget vs Attack A: Attack A at eps_xt ~ this
+        # value is the like-for-like latent-space attacker.
+        delta_xt_eff = (xt_adv - xt).detach()
+        eps_xt_eff_inf = float(delta_xt_eff.abs().max().item())
+        eps_xt_eff_l2  = float(delta_xt_eff.flatten().norm().item())
+        # Gain of the DDIM chain: how much the L-inf budget is amplified from
+        # image space to latent space, relative to the closed-form prediction
+        # eps_xt_closedform ~= sqrt(alpha_bar_t) * eps_img (<1 for edit_t>0).
+        alpha_bar_t = float(_alpha_bar_at(edit, t, (1, 1, 1, 1)).detach().flatten()[0].item())
+        eps_xt_closedform = float(eps_img * (alpha_bar_t ** 0.5))
+        chain_gain_inf = eps_xt_eff_inf / max(eps_xt_closedform, 1e-12)
+        print(f"[verify-b] effective ||delta_xt||_inf = {eps_xt_eff_inf:.4f}  "
+              f"(closed-form predicts {eps_xt_closedform:.4f}; chain gain x{chain_gain_inf:.2f})")
         wall = time.time() - t0
 
         out_dir = os.path.join(
@@ -388,16 +404,25 @@ def main():
                     "misalignment":       1.0 - cos_true,
                     "delta_img_inf_final": history[-1]["delta_img_inf"],
                     "delta_img_l2_final":  history[-1]["delta_img_l2"],
+                    "eps_xt_effective_inf": eps_xt_eff_inf,
+                    "eps_xt_effective_l2":  eps_xt_eff_l2,
+                    "eps_xt_closedform_inf": eps_xt_closedform,
+                    "chain_gain_inf":       chain_gain_inf,
+                    "alpha_bar_t":          alpha_bar_t,
                     "wall_seconds":       wall,
                 },
                 f, indent=2,
             )
         summary_rows.append({
-            "eps_img":            eps_img,
-            "eps_img_255":        eps_img * 127.5,
-            "cos_true":           cos_true,
-            "misalignment":       1.0 - cos_true,
-            "cos_proxy_final":    history[-1]["cos_proxy"],
+            "eps_img":               eps_img,
+            "eps_img_255":           eps_img * 127.5,
+            "cos_true":              cos_true,
+            "misalignment":          1.0 - cos_true,
+            "cos_proxy_final":       history[-1]["cos_proxy"],
+            "eps_xt_effective_inf":  eps_xt_eff_inf,
+            "eps_xt_effective_l2":   eps_xt_eff_l2,
+            "eps_xt_closedform_inf": eps_xt_closedform,
+            "chain_gain_inf":        chain_gain_inf,
         })
         print(f"[attack-b] eps_img={eps_img:g} (~{eps_img*127.5:.2f}/255)  "
               f"misalign={1 - cos_true:.4f}  "
@@ -411,7 +436,8 @@ def main():
                 delta_xt = (xt_adv - xt).detach()
                 # _render_attacked_edit expects (edit, xt_clean, delta_xt, t, mask, v_adv,...)
                 _render_attacked_edit(edit, xt, delta_xt, t, mask, v_adv,
-                                      out_dir=out_dir, args=args)
+                                      out_dir=out_dir, args=args,
+                                      eps=eps_img, label="attackB")
             except Exception as exc:
                 print(f"[attack-b] WARN: render_attacked_edit failed: {exc}")
 
