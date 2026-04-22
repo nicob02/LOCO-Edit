@@ -162,6 +162,13 @@ def parse_args():
                         help='Number of image-space PGD iterations.')
     parser.add_argument('--attack_b_eps_sweep',     type=str,      default='',      required=False,
                         help='Optional comma-separated sweep over eps_img, e.g. "0.004,0.008,0.016,0.031,0.063".')
+    parser.add_argument('--attack_b_target_sem',    type=str,      default='',      required=False,
+                        help='If set (e.g. "hair"), enables TARGETED HIJACK: the attacker also tries '
+                             'to steer v_adv toward the top singular direction of the target semantic '
+                             'masked GPM. Requires a pre-computed Phase 1 basis for that semantic on '
+                             'the same sample_idx.')
+    parser.add_argument('--attack_b_target_beta',   type=float,    default=1.0,     required=False,
+                        help='Weight of the hijack term in the PGD objective. 0 = pure destruction.')
 
     # ----- Phase 2 post-hoc tools (locality / transfer) -----
     parser.add_argument('--attack_type',  type=str, default='B', required=False,

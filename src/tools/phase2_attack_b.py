@@ -111,16 +111,36 @@ def _forward_closed_form(edit, x0, eps_ref, t):
 # ---------------------------------------------------------------------------
 
 def pgd_attack_b(edit, x0, xt_clean, eps_ref, t, mask, v_clean, *,
-                 eps_img, alpha_img, steps, init="zero"):
-    """PGD on delta_img with proxy loss = cos( J(x_t)*v_clean , J(x_t_adv)*v_clean ).
+                 eps_img, alpha_img, steps, init="zero",
+                 v_target=None, beta_hijack=0.0):
+    """PGD on delta_img.
 
-    The only difference from pgd_attack_a is the variable we optimise:
-    delta_img lives in image space; x_t_adv is obtained via the closed-form
-    forward-noising identity so the chain rule is trivial.
+    Two objectives rolled into one:
+
+      L_destroy(delta) = cos( J(x_t).v_clean , J(x_t_adv).v_clean )        [minimise]
+      L_hijack(delta)  = || J(x_t_adv).v_target ||^2
+                         / || J(x_t).v_target ||^2                         [maximise]
+
+      L = L_destroy - beta_hijack * L_hijack                               [minimise]
+
+    When `v_target is None` and `beta_hijack == 0`, this collapses exactly to the
+    original denial-of-service PGD (the previously published Attack B behaviour).
+    When v_target is provided, the attacker additionally tries to amplify the
+    Jacobian in the target attribute's direction, which encourages the
+    post-attack top singular vector to align with v_target.
     """
     g_clean = _jvp_x0(edit, t, xt_clean, v_clean, mask).detach()
     g_clean_flat = g_clean.flatten()
     g_clean_norm = g_clean_flat.norm().clamp(min=1e-12)
+
+    # For hijack: baseline ||J(xt_clean).v_target||^2 for normalisation.
+    if v_target is not None:
+        g_tgt_clean = _jvp_x0(edit, t, xt_clean, v_target, mask).detach()
+        g_tgt_clean_sq = g_tgt_clean.flatten().pow(2).sum().clamp(min=1e-12)
+        print(f"[attack-b] hijack: baseline ||J.v_target||^2 = "
+              f"{g_tgt_clean_sq.item():.3e}  beta = {beta_hijack:g}")
+    else:
+        g_tgt_clean_sq = None
 
     if init == "rand":
         delta_img = (torch.rand_like(x0) * 2 - 1) * eps_img
@@ -129,7 +149,6 @@ def pgd_attack_b(edit, x0, xt_clean, eps_ref, t, mask, v_clean, *,
         delta_img = torch.zeros_like(x0)
     delta_img = delta_img.detach().requires_grad_(True)
 
-    # Freeze model params: only delta_img receives gradient.
     for p in edit.unet.parameters():
         p.requires_grad_(False)
 
@@ -143,7 +162,14 @@ def pgd_attack_b(edit, x0, xt_clean, eps_ref, t, mask, v_clean, *,
         g_adv_norm = g_adv_flat.norm().clamp(min=1e-12)
         cos = (g_adv_flat * g_clean_flat).sum() / (g_clean_norm * g_adv_norm)
 
-        loss = cos
+        if v_target is not None and beta_hijack > 0:
+            g_tgt_adv = _jvp_x0(edit, t, xt_adv, v_target, mask)
+            hijack_ratio = g_tgt_adv.flatten().pow(2).sum() / g_tgt_clean_sq
+            loss = cos - beta_hijack * hijack_ratio
+        else:
+            hijack_ratio = torch.tensor(0.0, device=cos.device)
+            loss = cos
+
         grad = torch.autograd.grad(loss, delta_img, retain_graph=False)[0]
 
         with torch.no_grad():
@@ -152,16 +178,17 @@ def pgd_attack_b(edit, x0, xt_clean, eps_ref, t, mask, v_clean, *,
         delta_img.data.copy_(delta_img_new)
 
         history.append({
-            "step":          step_idx,
-            "cos_proxy":     float(cos.item()),
-            "delta_img_inf": float(delta_img.detach().abs().max().item()),
-            "delta_img_l2":  float(delta_img.detach().flatten().norm().item()),
+            "step":           step_idx,
+            "cos_proxy":      float(cos.item()),
+            "hijack_ratio":   float(hijack_ratio.item()),
+            "delta_img_inf":  float(delta_img.detach().abs().max().item()),
+            "delta_img_l2":   float(delta_img.detach().flatten().norm().item()),
         })
         if (step_idx % 5 == 0) or (step_idx == steps - 1):
             print(f"[attack-b] step {step_idx:3d}  "
                   f"cos_proxy={cos.item():+.4f}  "
-                  f"||d_img||_inf={delta_img.detach().abs().max().item():.4f}  "
-                  f"||d_img||_2={delta_img.detach().flatten().norm().item():.3f}")
+                  f"hijack_ratio={hijack_ratio.item():.3f}  "
+                  f"||d_img||_inf={delta_img.detach().abs().max().item():.4f}")
 
     return delta_img.detach(), history
 
@@ -317,6 +344,47 @@ def main():
     v_clean = vT_clean[0].view_as(xt).detach()
     print(f"[attack-b] v_clean ready: shape={tuple(v_clean.shape)}")
 
+    # -- Step 2b (OPTIONAL): load v_target from a second semantic's basis
+    # for the targeted hijacking variant. The target basis MUST have been
+    # computed at the same x_t (same sample_idx, edit_t) but with a different
+    # `choose_sem` mask -- typically via a second Phase 1 run.
+    v_target = None
+    if args.attack_b_target_sem.strip():
+        tgt_basis_rel = os.path.join(
+            "basis",
+            f"local_basis-{edit.edit_t}T-select-mask-{args.attack_b_target_sem}",
+        )
+        tgt_candidates = [
+            os.path.join(edit.result_folder, tgt_basis_rel, vT_modify_name),
+            os.path.join(args.attack_basis_src or "", "..",
+                         tgt_basis_rel, vT_modify_name) if args.attack_basis_src else "",
+        ]
+        import glob as _glob
+        tgt_candidates += _glob.glob(os.path.join(
+            os.path.dirname(__file__), "..", "runs",
+            f"CelebA_HQ_HF-CelebA_HQ_mask-*", "results",
+            f"sample_idx{args.sample_idx}", tgt_basis_rel, vT_modify_name,
+        ))
+        tgt_path = None
+        for c in tgt_candidates:
+            c = os.path.abspath(c) if c else ""
+            if c and os.path.isfile(c):
+                tgt_path = c
+                break
+        if tgt_path is None:
+            raise SystemExit(
+                f"[attack-b] --attack_b_target_sem={args.attack_b_target_sem} "
+                f"requires a pre-computed basis at {tgt_basis_rel}; "
+                "run Phase 1 with that choose_sem on the same sample first."
+            )
+        vT_target = torch.load(tgt_path, map_location=edit.device).to(edit.dtype)
+        # Project target into null-complement using the same vT_null_top so the
+        # hijack direction is in the same subspace as v_clean.
+        vT_target_proj = _project_to_v_clean_subspace(vT_target, vT_null_top)
+        v_target = vT_target_proj[0].view_as(xt).detach()
+        print(f"[attack-b] hijack enabled: v_target sem={args.attack_b_target_sem} "
+              f"beta={args.attack_b_target_beta}  loaded from {tgt_path}")
+
     # -- Step 3-5: PGD over a single eps_img OR a sweep.
     if args.attack_b_eps_sweep.strip():
         eps_list = [float(s) for s in args.attack_b_eps_sweep.split(",") if s.strip()]
@@ -330,6 +398,7 @@ def main():
             edit, x0, xt, eps_ref, t, mask, v_clean,
             eps_img=eps_img, alpha_img=args.attack_b_alpha_img,
             steps=args.attack_b_steps, init=args.attack_init,
+            v_target=v_target, beta_hijack=args.attack_b_target_beta,
         )
 
         x0_adv = (x0 + delta_img).detach().clamp(-1.0, 1.0)
@@ -344,6 +413,13 @@ def main():
         delta_xt_eff = (xt_adv - xt).detach()
         eps_xt_eff_inf = float(delta_xt_eff.abs().max().item())
         eps_xt_eff_l2  = float(delta_xt_eff.flatten().norm().item())
+
+        # If hijacking: how aligned is the post-attack direction with v_target?
+        cos_hijack = None
+        if v_target is not None:
+            cos_hijack = abs(float((v_adv.flatten() * v_target.flatten()).sum().item()))
+            print(f"[verify-b] hijack: |cos(v_adv, v_target)| = {cos_hijack:.4f}  "
+                  f"(compare to |cos(v_adv, v_clean)| = {cos_true:.4f})")
         # Gain of the DDIM chain: how much the L-inf budget is amplified from
         # image space to latent space, relative to the closed-form prediction
         # eps_xt_closedform ~= sqrt(alpha_bar_t) * eps_img (<1 for edit_t>0).
@@ -409,6 +485,11 @@ def main():
                     "eps_xt_closedform_inf": eps_xt_closedform,
                     "chain_gain_inf":       chain_gain_inf,
                     "alpha_bar_t":          alpha_bar_t,
+                    "target_sem":           args.attack_b_target_sem or None,
+                    "beta_hijack":          args.attack_b_target_beta,
+                    "cos_hijack":           cos_hijack,
+                    "hijack_success":       (cos_hijack is not None and
+                                             cos_hijack > cos_true),
                     "wall_seconds":       wall,
                 },
                 f, indent=2,
@@ -423,6 +504,9 @@ def main():
             "eps_xt_effective_l2":   eps_xt_eff_l2,
             "eps_xt_closedform_inf": eps_xt_closedform,
             "chain_gain_inf":        chain_gain_inf,
+            "cos_hijack":            cos_hijack,
+            "hijack_success":        (cos_hijack is not None and
+                                      cos_hijack > cos_true),
         })
         print(f"[attack-b] eps_img={eps_img:g} (~{eps_img*127.5:.2f}/255)  "
               f"misalign={1 - cos_true:.4f}  "
