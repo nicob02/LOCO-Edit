@@ -55,6 +55,11 @@ def _render_edit_x0(edit, xt_start: torch.Tensor, v_dir: torch.Tensor) -> torch.
     Mirrors exactly what run_edit_null_space_projection does for one direction
     at the maximum lambda (final iteration of the guidance chain). Decoding is
     via DDIMforwardsteps (performance_boosting=True -> no KV cache inflation).
+
+    NOTE on return conventions: DDIMforwardsteps returns a 3-tuple
+    (latents, t, t_idx) only when `t_end_idx` is hit mid-loop. When we denoise
+    all the way to t=0 (t_end_idx=-1), the function falls through to the final
+    `return xt` at the end of the method -> a single tensor. Handle both.
     """
     xt = xt_start.clone().to(device=edit.device, dtype=edit.dtype)
     vk = v_dir.view(-1, *xt.shape[1:]).to(device=edit.device, dtype=edit.dtype)
@@ -63,11 +68,11 @@ def _render_edit_x0(edit, xt_start: torch.Tensor, v_dir: torch.Tensor) -> torch.
             xt, t_idx=edit.edit_t_idx, vk=vk,
             single_edit_step=edit.x_space_guidance_edit_step,
         )
-    # Decode x_t -> x_0 (returns a triple (x0, t, t_idx) in DDIM mode).
-    x0, _, _ = edit.DDIMforwardsteps(
+    out = edit.DDIMforwardsteps(
         xt, t_start_idx=edit.edit_t_idx, t_end_idx=-1,
         save_image=False, performance_boosting=True,
     )
+    x0 = out[0] if isinstance(out, tuple) else out
     return x0.to(device=edit.device, dtype=edit.dtype)
 
 
