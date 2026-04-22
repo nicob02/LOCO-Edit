@@ -177,6 +177,19 @@ def parse_args():
     parser.add_argument('--transfer_targets', type=str, default='', required=False,
                         help='Comma-separated list of target sample indices, e.g. "1000,2000,3000".')
 
+    # ----- Phase 3 / Defenses -----
+    # D1: randomized smoothing.
+    parser.add_argument('--defense_sigmas', type=str, default='0.01,0.02,0.05', required=False,
+                        help='Comma-separated sigmas for D1 randomized smoothing of x_t.')
+    parser.add_argument('--defense_n_samples', type=str, default='5,10', required=False,
+                        help='Comma-separated number-of-samples for D1.')
+    # D2: input purification.
+    parser.add_argument('--purify_plan', type=str,
+                        default='jpeg:75,90 blur:0.5,1.0 bits:4,6',
+                        required=False,
+                        help='Space-separated list of method:param-csv tokens, '
+                             'e.g. "jpeg:75,90 blur:0.5,1.0 bits:4,6".')
+
     args = parser.parse_args()
     return args
 
