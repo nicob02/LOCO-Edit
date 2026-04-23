@@ -202,13 +202,15 @@ def parse_args():
 
 def str2bool(v):
     if isinstance(v, bool):
-       return v
-    if v.lower() in ('true'):
+        return v
+    s = str(v).strip().lower()
+    if s in ('true', 't', 'yes', 'y', '1'):
         return True
-    elif v.lower() in ('false'):
+    if s in ('false', 'f', 'no', 'n', '0'):
         return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
+    raise argparse.ArgumentTypeError(
+        f'Boolean value expected, got {v!r}. Allowed: true/false/t/f/yes/no/1/0.'
+    )
 
 def preset(args):
     # reproducatibility
