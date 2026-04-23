@@ -49,6 +49,20 @@ from utils.define_argparser import parse_args, preset
 from modules.edit import EditUncondDiffusion
 
 
+def _ddim_decode_from_xt(edit, xt_start: torch.Tensor) -> torch.Tensor:
+    """Decode x_t all the way to x_0 without any x-space guidance (the 'no edit'
+    reconstruction). Needed as the locality baseline so DDIM round-trip noise
+    cancels out of the leakage metric.
+    """
+    xt = xt_start.clone().to(device=edit.device, dtype=edit.dtype)
+    out = edit.DDIMforwardsteps(
+        xt, t_start_idx=edit.edit_t_idx, t_end_idx=-1,
+        save_image=False, performance_boosting=True,
+    )
+    x0 = out[0] if isinstance(out, tuple) else out
+    return x0.to(device=edit.device, dtype=edit.dtype)
+
+
 def _render_edit_x0(edit, xt_start: torch.Tensor, v_dir: torch.Tensor) -> torch.Tensor:
     """Apply x-space guidance from `xt_start` along direction `v_dir`, decode to x_0.
 
@@ -147,24 +161,28 @@ def main():
         )
     print(f"[locality] found {len(result_paths)} attack runs under {sweep_dir}")
 
-    # Shared: x_0 from dataset, mask, xt_clean (recomputed)
-    x0_clean = edit.dataset[args.sample_idx].to(device=edit.device, dtype=edit.dtype)
-    if x0_clean.ndim == 3:
-        x0_clean = x0_clean.unsqueeze(0)
     mask = edit.dataset.getmask(idx=args.sample_idx, choose_sem=args.choose_sem)
     if torch.is_tensor(mask):
         mask = mask.to(device=edit.device)
     xt_clean, t = _load_clean_xt(edit, args.sample_idx)
 
     rows = []
-    # Clean baseline: run once, reuse across every eps (they all share v_clean and xt).
+    # ---- Baseline 1: "no edit" DDIM reconstruction from xt_clean ---------------
+    # This is the correct reference frame for measuring leakage: compared to the
+    # dataset image, the DDIM round-trip reconstruction adds globally-distributed
+    # encode/decode noise that dominates the outside-mask L2. Using the no-edit
+    # reconstruction cancels that noise to first order.
+    print("[locality] computing DDIM no-edit reconstruction (reference) ...")
+    with torch.no_grad():
+        x0_recon_clean = _ddim_decode_from_xt(edit, xt_clean)
+
+    # ---- Baseline 2: clean LOCO edit (v_clean applied at xt_clean) -------------
     print("[locality] computing clean-baseline edit (reused for all eps) ...")
-    # We need v_clean. Load from the first attack result (all attack runs save v_clean).
     ref = torch.load(result_paths[0], map_location="cpu")
     v_clean = ref["v_clean"].to(device=edit.device, dtype=edit.dtype)
     with torch.no_grad():
         x0_edit_clean = _render_edit_x0(edit, xt_clean, v_clean)
-    diff_clean = (x0_edit_clean - x0_clean).detach()
+    diff_clean = (x0_edit_clean - x0_recon_clean).detach()
     mask_bin = _mask_to_image_shape(mask, diff_clean.shape).to(diff_clean.device)
     leak_clean = _leakage(diff_clean, mask_bin)
     print(f"[locality] clean baseline: leakage={leak_clean['leakage']:.3f} "
@@ -185,42 +203,57 @@ def main():
         else:
             xt_adv = blob["xt_adv"].to(device=edit.device, dtype=edit.dtype)
 
+        # Full attack effect at x_0: run the adversarial direction from the
+        # adversarial latent, compare against the clean no-edit reconstruction
+        # (stable reference). For Attack B xt_adv is a function of x_0_adv, so
+        # this also captures any non-local change induced by the image-space
+        # perturbation itself, not just the rotated direction.
         with torch.no_grad():
             x0_edit_adv = _render_edit_x0(edit, xt_adv, v_adv)
-        diff_adv = (x0_edit_adv - x0_clean).detach()
+        diff_adv = (x0_edit_adv - x0_recon_clean).detach()
         leak_adv = _leakage(diff_adv, mask_bin)
+
+        # Also isolate the pure "direction effect": apply v_adv from xt_clean.
+        # This tells us how much of the locality break is due to the rotated
+        # direction alone, versus the latent-space perturbation of xt.
+        with torch.no_grad():
+            x0_edit_adv_dironly = _render_edit_x0(edit, xt_clean, v_adv)
+        diff_adv_dironly = (x0_edit_adv_dironly - x0_recon_clean).detach()
+        leak_adv_dironly = _leakage(diff_adv_dironly, mask_bin)
 
         # Side-by-side dump for visual QA (rescale diffs to [0,1] for saving).
         vis = torch.cat([
-            (x0_clean / 2 + 0.5).clamp(0, 1),
+            (x0_recon_clean / 2 + 0.5).clamp(0, 1),
             (x0_edit_clean / 2 + 0.5).clamp(0, 1),
             (x0_edit_adv / 2 + 0.5).clamp(0, 1),
         ], dim=0)
         tvu.save_image(vis, os.path.join(run_dir, "locality_triptych.png"),
                        nrow=3)
 
-        # Also save the diff heatmaps (per-pixel L2 across channels).
         d_adv_img = diff_adv.abs().mean(dim=1, keepdim=True)
         d_adv_img = (d_adv_img - d_adv_img.min()) / (d_adv_img.max() - d_adv_img.min() + 1e-8)
         tvu.save_image(d_adv_img, os.path.join(run_dir, "locality_diff_adv.png"))
 
         row = {
-            "run":                  os.path.basename(run_dir),
-            "eps":                  eps_tag,
-            "leakage_clean":        leak_clean["leakage"],
-            "leakage_adv":          leak_adv["leakage"],
-            "norm_inside_clean":    leak_clean["norm_inside"],
-            "norm_outside_clean":   leak_clean["norm_outside"],
-            "norm_inside_adv":      leak_adv["norm_inside"],
-            "norm_outside_adv":     leak_adv["norm_outside"],
-            "leakage_increase":     leak_adv["leakage"] - leak_clean["leakage"],
+            "run":                    os.path.basename(run_dir),
+            "eps":                    eps_tag,
+            "leakage_clean":          leak_clean["leakage"],
+            "leakage_adv":            leak_adv["leakage"],
+            "leakage_adv_dironly":    leak_adv_dironly["leakage"],
+            "norm_inside_clean":      leak_clean["norm_inside"],
+            "norm_outside_clean":     leak_clean["norm_outside"],
+            "norm_inside_adv":        leak_adv["norm_inside"],
+            "norm_outside_adv":       leak_adv["norm_outside"],
+            "leakage_increase":       leak_adv["leakage"] - leak_clean["leakage"],
+            "leakage_increase_dir":   leak_adv_dironly["leakage"] - leak_clean["leakage"],
         }
         rows.append(row)
         with open(os.path.join(run_dir, "locality_summary.json"), "w") as f:
             json.dump(row, f, indent=2)
         print(f"[locality]   leakage_clean={leak_clean['leakage']:.3f}  "
               f"leakage_adv={leak_adv['leakage']:.3f}  "
-              f"(Δ = {row['leakage_increase']:+.3f})")
+              f"(Δ full = {row['leakage_increase']:+.3f}, "
+              f"Δ dir-only = {row['leakage_increase_dir']:+.3f})")
 
     csv_path = os.path.join(sweep_dir,
                             f"locality_attack{args.attack_type}.csv")
