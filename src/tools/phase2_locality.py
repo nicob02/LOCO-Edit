@@ -101,14 +101,44 @@ def _mask_to_image_shape(mask: torch.Tensor, shape) -> torch.Tensor:
 
 
 def _leakage(diff: torch.Tensor, mask_bin: torch.Tensor) -> dict:
-    inside = (diff * mask_bin).flatten().norm().item()
-    outside = (diff * (1.0 - mask_bin)).flatten().norm().item()
-    total = inside + outside
+    """Leakage of `diff` w.r.t. the mask (1 = inside ROI, 0 = outside).
+
+    We report three metrics:
+      * `leakage`            : outside_L2 / (inside_L2 + outside_L2)
+                               -- the traditional metric, but biased by mask area
+                               (if the mask covers <<50% of pixels, this metric is
+                               pinned toward 1.0 even for a perfectly local edit).
+      * `leakage_area_norm`  : outside_RMS / (inside_RMS + outside_RMS), where
+                               RMS = L2 / sqrt(#elements). Area-normalized; the
+                               direct locality analogue, robust to mask size.
+      * `intensity_ratio`    : outside_mean_abs / inside_mean_abs. Unbounded.
+                               <1 -> edit more intense inside mask (locality holds).
+                               =1 -> uniform.  >1 -> locality broken.
+    """
+    d = diff.abs()
+    m = mask_bin
+    inv_m = 1.0 - mask_bin
+
+    inside_L2 = (diff * m).flatten().norm().item()
+    outside_L2 = (diff * inv_m).flatten().norm().item()
+    total_L2 = inside_L2 + outside_L2
+
+    inside_n = m.sum().clamp_min(1).item()
+    outside_n = inv_m.sum().clamp_min(1).item()
+
+    inside_mean_abs = (d * m).sum().item() / inside_n
+    outside_mean_abs = (d * inv_m).sum().item() / outside_n
+    inside_rms = inside_L2 / (inside_n ** 0.5)
+    outside_rms = outside_L2 / (outside_n ** 0.5)
+
     return {
-        "leakage":      outside / max(total, 1e-8),
-        "norm_inside":  inside,
-        "norm_outside": outside,
-        "norm_total":   total,
+        "leakage":           outside_L2 / max(total_L2, 1e-8),
+        "leakage_area_norm": outside_rms / max(inside_rms + outside_rms, 1e-12),
+        "intensity_ratio":   outside_mean_abs / max(inside_mean_abs, 1e-12),
+        "norm_inside":       inside_L2,
+        "norm_outside":      outside_L2,
+        "mean_abs_inside":   inside_mean_abs,
+        "mean_abs_outside":  outside_mean_abs,
     }
 
 
@@ -185,8 +215,12 @@ def main():
     diff_clean = (x0_edit_clean - x0_recon_clean).detach()
     mask_bin = _mask_to_image_shape(mask, diff_clean.shape).to(diff_clean.device)
     leak_clean = _leakage(diff_clean, mask_bin)
-    print(f"[locality] clean baseline: leakage={leak_clean['leakage']:.3f} "
-          f"(inside={leak_clean['norm_inside']:.3f}, outside={leak_clean['norm_outside']:.3f})")
+    print(f"[locality] clean baseline (area-normalised): "
+          f"leakage_area={leak_clean['leakage_area_norm']:.3f}, "
+          f"intensity_ratio(out/in)={leak_clean['intensity_ratio']:.2f}")
+    print(f"[locality] clean baseline (raw L2, area-biased): "
+          f"leakage={leak_clean['leakage']:.3f} "
+          f"(inside_L2={leak_clean['norm_inside']:.3f}, outside_L2={leak_clean['norm_outside']:.3f})")
     del ref
     gc.collect(); torch.cuda.empty_cache()
 
@@ -235,25 +269,41 @@ def main():
         tvu.save_image(d_adv_img, os.path.join(run_dir, "locality_diff_adv.png"))
 
         row = {
-            "run":                    os.path.basename(run_dir),
-            "eps":                    eps_tag,
-            "leakage_clean":          leak_clean["leakage"],
-            "leakage_adv":            leak_adv["leakage"],
-            "leakage_adv_dironly":    leak_adv_dironly["leakage"],
-            "norm_inside_clean":      leak_clean["norm_inside"],
-            "norm_outside_clean":     leak_clean["norm_outside"],
-            "norm_inside_adv":        leak_adv["norm_inside"],
-            "norm_outside_adv":       leak_adv["norm_outside"],
-            "leakage_increase":       leak_adv["leakage"] - leak_clean["leakage"],
-            "leakage_increase_dir":   leak_adv_dironly["leakage"] - leak_clean["leakage"],
+            "run":                       os.path.basename(run_dir),
+            "eps":                       eps_tag,
+            # area-normalised (preferred): use these in the paper
+            "leakage_area_clean":        leak_clean["leakage_area_norm"],
+            "leakage_area_adv":          leak_adv["leakage_area_norm"],
+            "leakage_area_adv_dironly":  leak_adv_dironly["leakage_area_norm"],
+            "intensity_ratio_clean":     leak_clean["intensity_ratio"],
+            "intensity_ratio_adv":       leak_adv["intensity_ratio"],
+            "intensity_ratio_adv_dironly": leak_adv_dironly["intensity_ratio"],
+            "leakage_area_increase":     leak_adv["leakage_area_norm"] - leak_clean["leakage_area_norm"],
+            "leakage_area_increase_dir": leak_adv_dironly["leakage_area_norm"] - leak_clean["leakage_area_norm"],
+            # raw L2 (area-biased, kept for backward compat)
+            "leakage_clean":             leak_clean["leakage"],
+            "leakage_adv":               leak_adv["leakage"],
+            "leakage_adv_dironly":       leak_adv_dironly["leakage"],
+            "norm_inside_clean":         leak_clean["norm_inside"],
+            "norm_outside_clean":        leak_clean["norm_outside"],
+            "norm_inside_adv":           leak_adv["norm_inside"],
+            "norm_outside_adv":          leak_adv["norm_outside"],
+            "mean_abs_inside_clean":     leak_clean["mean_abs_inside"],
+            "mean_abs_outside_clean":    leak_clean["mean_abs_outside"],
+            "mean_abs_inside_adv":       leak_adv["mean_abs_inside"],
+            "mean_abs_outside_adv":      leak_adv["mean_abs_outside"],
+            "leakage_increase":          leak_adv["leakage"] - leak_clean["leakage"],
+            "leakage_increase_dir":      leak_adv_dironly["leakage"] - leak_clean["leakage"],
         }
         rows.append(row)
         with open(os.path.join(run_dir, "locality_summary.json"), "w") as f:
             json.dump(row, f, indent=2)
-        print(f"[locality]   leakage_clean={leak_clean['leakage']:.3f}  "
-              f"leakage_adv={leak_adv['leakage']:.3f}  "
-              f"(Δ full = {row['leakage_increase']:+.3f}, "
-              f"Δ dir-only = {row['leakage_increase_dir']:+.3f})")
+        print(f"[locality]   area-norm leak: clean={leak_clean['leakage_area_norm']:.3f}  "
+              f"adv={leak_adv['leakage_area_norm']:.3f}  "
+              f"(Δ full = {row['leakage_area_increase']:+.3f}, "
+              f"Δ dir-only = {row['leakage_area_increase_dir']:+.3f}) | "
+              f"intensity_ratio: clean={leak_clean['intensity_ratio']:.2f} "
+              f"adv={leak_adv['intensity_ratio']:.2f}")
 
     csv_path = os.path.join(sweep_dir,
                             f"locality_attack{args.attack_type}.csv")
