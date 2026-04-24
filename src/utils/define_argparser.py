@@ -169,6 +169,15 @@ def parse_args():
                              'the same sample_idx.')
     parser.add_argument('--attack_b_target_beta',   type=float,    default=1.0,     required=False,
                         help='Weight of the hijack term in the PGD objective. 0 = pure destruction.')
+    parser.add_argument('--attack_b_hijack_mode',   type=str,      default='proxy',
+                        choices=['proxy', 'inloop_gpm', 'inloop_gpm_destroy'], required=False,
+                        help='Hijack objective. "proxy": sensitivity-amplification (fast, weak). '
+                             '"inloop_gpm": differentiable K-step power iteration, maximize '
+                             'cos(v_surrogate, v_target)^2 directly (slower, much stronger). '
+                             '"inloop_gpm_destroy": combines destroy + hijack.')
+    parser.add_argument('--attack_b_hijack_power_iters', type=int, default=3, required=False,
+                        help='Number of power-iteration steps used inside PGD when '
+                             'hijack_mode in {inloop_gpm, inloop_gpm_destroy}. 3-5 is plenty.')
 
     # ----- Phase 2 post-hoc tools (locality / transfer) -----
     parser.add_argument('--attack_type',  type=str, default='B', required=False,

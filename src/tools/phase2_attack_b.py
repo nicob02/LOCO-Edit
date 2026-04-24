@@ -107,40 +107,106 @@ def _forward_closed_form(edit, x0, eps_ref, t):
 
 
 # ---------------------------------------------------------------------------
+# differentiable power iteration of J(x_t)^T J(x_t)
+# ---------------------------------------------------------------------------
+#
+# For the targeted-hijack variant we need a differentiable surrogate of the
+# top right singular vector of J(x_t_adv). The natural choice is K steps of
+# power iteration on M := J^T J, which is the Gauss-Newton of (1/2)||f||^2.
+# Written with torch.func.jvp (for J v) + autograd.grad (for J^T of that),
+# both of which compose with standard autograd, so gradients flow all the
+# way back to x_t_adv and thus to delta_img.
+#
+# Memory and time cost per PGD step:
+#   proxy loss        : 1 JVP per step (cheap, already in use)
+#   inloop_gpm (K=3)  : ~6 JVP-scale ops  (3 * (1 JVP + 1 backward) )
+# i.e. roughly 3-5x the cost of the proxy loss. Not 10x. Safe for 40 PGD steps.
+
+def _apply_JtJ(edit, t, xt, v, mask):
+    """Differentiable action of J(xt)^T J(xt) on v. Returns a tensor
+    shaped like v. Gradients flow through both xt and v (via the
+    create_graph=True autograd.grad call).
+
+    IMPORTANT: v must have requires_grad=True and be part of an autograd
+    graph that can be back-propagated through. The caller (_power_iter_diff)
+    is responsible for ensuring this.
+    """
+    Jv = _jvp_x0(edit, t, xt, v, mask)
+    # J^T J v = grad_{v} ( 1/2 ||Jv||^2 )
+    JtJv = torch.autograd.grad(
+        outputs=(Jv * Jv).sum() * 0.5,
+        inputs=v,
+        create_graph=True,
+        retain_graph=True,
+    )[0]
+    return JtJv
+
+
+def _power_iter_diff(edit, t, xt, v_init, mask, *, K=3, eps=1e-12):
+    """K-step differentiable power iteration of J(xt)^T J(xt). Warm-starts
+    from v_init (typically v_target) so the returned surrogate sits near
+    v_init when multiple singular directions are present.
+
+    Gradients propagate through xt (and thus through delta_img in the
+    outer PGD). v_init itself is treated as a constant (we detach it) --
+    we only need gradients through xt.
+    """
+    # Fresh leaf with grad: needed so autograd.grad(..., inputs=v0) works.
+    v0 = v_init.detach().clone().requires_grad_(True)
+    v = v0 / v0.flatten().norm().clamp(min=eps)
+    for _ in range(K):
+        w = _apply_JtJ(edit, t, xt, v, mask)
+        v = w / w.flatten().norm().clamp(min=eps)
+    return v
+
+
+# ---------------------------------------------------------------------------
 # attack loop: optimise delta_img (image space) via closed-form x_0 -> x_t
 # ---------------------------------------------------------------------------
 
 def pgd_attack_b(edit, x0, xt_clean, eps_ref, t, mask, v_clean, *,
                  eps_img, alpha_img, steps, init="zero",
-                 v_target=None, beta_hijack=0.0):
-    """PGD on delta_img.
+                 v_target=None, beta_hijack=0.0,
+                 hijack_mode="proxy", hijack_power_iters=3):
+    """PGD on delta_img. Supports three objectives selected by `hijack_mode`:
 
-    Two objectives rolled into one:
+    - hijack_mode == "proxy" (default, back-compatible):
+        L_destroy = cos( J(x_t).v_clean , J(x_t_adv).v_clean )              [min]
+        L_hijack  = || J(x_t_adv).v_target ||^2 / || J(x_t).v_target ||^2   [max]
+        L = L_destroy - beta_hijack * L_hijack                               [min]
 
-      L_destroy(delta) = cos( J(x_t).v_clean , J(x_t_adv).v_clean )        [minimise]
-      L_hijack(delta)  = || J(x_t_adv).v_target ||^2
-                         / || J(x_t).v_target ||^2                         [maximise]
+      This is the original "sensitivity-amplification" proxy. It can rotate
+      v_adv away from v_clean but cannot steer it to v_target (experimentally
+      confirmed: cos(v_adv, v_target) remains ~0 even at beta=10).
 
-      L = L_destroy - beta_hijack * L_hijack                               [minimise]
+    - hijack_mode == "inloop_gpm":
+        v_surrogate = K-step differentiable power iteration on J(x_t_adv)^T
+                      J(x_t_adv), warm-started from v_target.
+        L = - cos(v_surrogate, v_target)^2                                   [min]
 
-    When `v_target is None` and `beta_hijack == 0`, this collapses exactly to the
-    original denial-of-service PGD (the previously published Attack B behaviour).
-    When v_target is provided, the attacker additionally tries to amplify the
-    Jacobian in the target attribute's direction, which encourages the
-    post-attack top singular vector to align with v_target.
+      Pure targeted-hijack objective. Drops the destroy term (v_target is
+      assumed orthogonal or unrelated to v_clean, so a successful hijack
+      automatically produces large misalignment too).
+
+    - hijack_mode == "inloop_gpm_destroy": same v_surrogate, but loss is
+        L = cos(v_surrogate, v_clean)^2 - beta_hijack * cos(v_surrogate, v_target)^2
+      which jointly destroys and hijacks.
     """
     g_clean = _jvp_x0(edit, t, xt_clean, v_clean, mask).detach()
     g_clean_flat = g_clean.flatten()
     g_clean_norm = g_clean_flat.norm().clamp(min=1e-12)
 
-    # For hijack: baseline ||J(xt_clean).v_target||^2 for normalisation.
-    if v_target is not None:
+    if v_target is not None and hijack_mode == "proxy":
         g_tgt_clean = _jvp_x0(edit, t, xt_clean, v_target, mask).detach()
         g_tgt_clean_sq = g_tgt_clean.flatten().pow(2).sum().clamp(min=1e-12)
         print(f"[attack-b] hijack: baseline ||J.v_target||^2 = "
               f"{g_tgt_clean_sq.item():.3e}  beta = {beta_hijack:g}")
     else:
         g_tgt_clean_sq = None
+
+    if v_target is not None and hijack_mode.startswith("inloop_gpm"):
+        print(f"[attack-b] inloop-GPM hijack activated "
+              f"(K={hijack_power_iters}, beta={beta_hijack:g}, mode={hijack_mode!r})")
 
     if init == "rand":
         delta_img = (torch.rand_like(x0) * 2 - 1) * eps_img
@@ -160,15 +226,35 @@ def pgd_attack_b(edit, x0, xt_clean, eps_ref, t, mask, v_clean, *,
         g_adv = _jvp_x0(edit, t, xt_adv, v_clean, mask)
         g_adv_flat = g_adv.flatten()
         g_adv_norm = g_adv_flat.norm().clamp(min=1e-12)
-        cos = (g_adv_flat * g_clean_flat).sum() / (g_clean_norm * g_adv_norm)
+        cos_destroy = (g_adv_flat * g_clean_flat).sum() / (g_clean_norm * g_adv_norm)
 
-        if v_target is not None and beta_hijack > 0:
+        cos_hijack_live = torch.tensor(0.0, device=cos_destroy.device)
+        hijack_ratio = torch.tensor(0.0, device=cos_destroy.device)
+
+        if v_target is not None and hijack_mode == "proxy" and beta_hijack > 0:
             g_tgt_adv = _jvp_x0(edit, t, xt_adv, v_target, mask)
             hijack_ratio = g_tgt_adv.flatten().pow(2).sum() / g_tgt_clean_sq
-            loss = cos - beta_hijack * hijack_ratio
+            loss = cos_destroy - beta_hijack * hijack_ratio
+
+        elif v_target is not None and hijack_mode.startswith("inloop_gpm"):
+            v_surrogate = _power_iter_diff(
+                edit, t, xt_adv, v_init=v_target, mask=mask,
+                K=hijack_power_iters,
+            )
+            vs = v_surrogate.flatten()
+            vt = v_target.flatten()
+            vc = v_clean.flatten()
+            vt_n = vt / vt.norm().clamp(min=1e-12)
+            vc_n = vc / vc.norm().clamp(min=1e-12)
+            cos_hijack_live = (vs * vt_n).sum()
+            cos_destroy_live = (vs * vc_n).sum()
+            if hijack_mode == "inloop_gpm":
+                loss = -(cos_hijack_live ** 2)
+            else:
+                loss = (cos_destroy_live ** 2) - beta_hijack * (cos_hijack_live ** 2)
+
         else:
-            hijack_ratio = torch.tensor(0.0, device=cos.device)
-            loss = cos
+            loss = cos_destroy
 
         grad = torch.autograd.grad(loss, delta_img, retain_graph=False)[0]
 
@@ -178,16 +264,20 @@ def pgd_attack_b(edit, x0, xt_clean, eps_ref, t, mask, v_clean, *,
         delta_img.data.copy_(delta_img_new)
 
         history.append({
-            "step":           step_idx,
-            "cos_proxy":      float(cos.item()),
-            "hijack_ratio":   float(hijack_ratio.item()),
-            "delta_img_inf":  float(delta_img.detach().abs().max().item()),
-            "delta_img_l2":   float(delta_img.detach().flatten().norm().item()),
+            "step":               step_idx,
+            "cos_proxy":          float(cos_destroy.item()),
+            "cos_hijack_live":    float(cos_hijack_live.item()) if torch.is_tensor(cos_hijack_live) else 0.0,
+            "hijack_ratio":       float(hijack_ratio.item()),
+            "delta_img_inf":      float(delta_img.detach().abs().max().item()),
+            "delta_img_l2":       float(delta_img.detach().flatten().norm().item()),
         })
         if (step_idx % 5 == 0) or (step_idx == steps - 1):
+            tag_h = (f"  cos_hijack_live={cos_hijack_live.item():+.4f}"
+                     if v_target is not None and hijack_mode.startswith("inloop_gpm")
+                     else f"  hijack_ratio={hijack_ratio.item():.3f}")
             print(f"[attack-b] step {step_idx:3d}  "
-                  f"cos_proxy={cos.item():+.4f}  "
-                  f"hijack_ratio={hijack_ratio.item():.3f}  "
+                  f"cos_destroy={cos_destroy.item():+.4f}"
+                  f"{tag_h}  "
                   f"||d_img||_inf={delta_img.detach().abs().max().item():.4f}")
 
     return delta_img.detach(), history
@@ -399,6 +489,8 @@ def main():
             eps_img=eps_img, alpha_img=args.attack_b_alpha_img,
             steps=args.attack_b_steps, init=args.attack_init,
             v_target=v_target, beta_hijack=args.attack_b_target_beta,
+            hijack_mode=args.attack_b_hijack_mode,
+            hijack_power_iters=args.attack_b_hijack_power_iters,
         )
 
         x0_adv = (x0 + delta_img).detach().clamp(-1.0, 1.0)
