@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 
-_EPS_RE = re.compile(r"eps(?:_img)?([0-9.eE+-]+)")
+_EPS_RE = re.compile(r"eps(?:_img)?([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)")
 
 
 def _eps_from_run(s: str) -> float:
