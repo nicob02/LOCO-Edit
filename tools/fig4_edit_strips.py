@@ -62,12 +62,23 @@ def main():
     strips = []
     if args.clean_strip and os.path.isfile(args.clean_strip):
         strips.append(("clean  (no attack)", _load(args.clean_strip)))
+
+    collected = []
     for d in subdirs:
         eps = float(_EPS_RE.search(d).group(1))
         path = _find_strip(d, args.sample_idx, args.choose_sem, eps, prefix)
         if path is None:
             print(f"[fig4] no edit strip for eps={eps} under {d}")
             continue
+        collected.append((eps, path))
+
+    if not strips and collected:
+        eps_min, path_min = collected[0]
+        strips.append((f"~clean  (smallest $\\varepsilon={eps_min:g}$, misalign$\\approx$0)",
+                       _load(path_min)))
+        collected = collected[1:]
+
+    for eps, path in collected:
         strips.append((f"attacked  $\\varepsilon={eps:g}$", _load(path)))
 
     if not strips:
