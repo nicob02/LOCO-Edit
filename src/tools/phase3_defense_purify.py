@@ -147,24 +147,41 @@ def main():
         x0_clean = x0_clean.unsqueeze(0)
 
     # We need vT_null_top for verify_misalignment_b. Load from the basis file.
+    # The basis is produced by a Phase 1 run, so it might live under a
+    # different run folder (e.g. phase1_with_null) than the current --note.
+    # We therefore try several candidate paths in order, then fall back to a
+    # repo-wide glob across all CelebA_HQ_HF runs for the same sample_idx.
     basis_rel = os.path.join(
         "basis", f"local_basis-{edit.edit_t}T-select-mask-{args.choose_sem}",
     )
-    # Try both the attack run's folder and the current edit.result_folder.
+    vT_null_file = f"vT-null-{args.pca_rank_null}.pt"
     candidates = [
-        os.path.join(sweep_dir, "..", basis_rel, f"vT-null-{args.pca_rank_null}.pt"),
-        os.path.join(edit.result_folder, basis_rel, f"vT-null-{args.pca_rank_null}.pt"),
+        os.path.join(sweep_dir, "..", basis_rel, vT_null_file),
+        os.path.join(edit.result_folder, basis_rel, vT_null_file),
+        os.path.join(edit.result_folder, f"sample_idx{args.sample_idx}", basis_rel, vT_null_file),
     ]
+    import glob as _glob
+    # Repo-wide fallback: any phase1 / phase2 / ... run that happened to
+    # compute the same-sample, same-mask, same-edit_t basis.
+    runs_root = os.path.join(os.path.dirname(__file__), "..", "runs")
+    candidates += _glob.glob(os.path.join(
+        runs_root, "CelebA_HQ_HF-CelebA_HQ_mask-*", "results",
+        f"sample_idx{args.sample_idx}", basis_rel, vT_null_file,
+    ))
+
     vT_null_top = None
     for c in candidates:
-        c = os.path.abspath(c)
-        if os.path.isfile(c):
+        c = os.path.abspath(c) if c else ""
+        if c and os.path.isfile(c):
             vT_null_top = torch.load(c, map_location=edit.device).to(edit.dtype)[: args.pca_rank_null]
             print(f"[defense-D2] loaded vT_null_top from {c}")
             break
     if vT_null_top is None:
-        raise SystemExit("[defense-D2] cannot find vT_null_top basis file. "
-                         "Point sweep_dir at the Phase 2 sample_idx<N> folder.")
+        raise SystemExit(
+            f"[defense-D2] cannot find {vT_null_file} under any of:\n  "
+            + "\n  ".join(candidates)
+            + "\nRun Phase 1 for the same sample_idx, choose_sem and edit_t first."
+        )
 
     # parse purify plan: e.g. "jpeg:75,90 blur:0.5,1.0 bits:4,6"
     plans = []
