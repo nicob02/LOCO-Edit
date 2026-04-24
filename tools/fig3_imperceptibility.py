@@ -29,8 +29,11 @@ def main():
     p.add_argument("--out",       required=True)
     args = p.parse_args()
 
-    subdirs = sorted(glob.glob(os.path.join(args.sweep_dir, "attackB-*")),
-                     key=lambda s: float(_EPS_RE.search(s).group(1)))
+    raw = glob.glob(os.path.join(args.sweep_dir, "attackB-*"))
+    raw = [p for p in raw if os.path.isdir(p) and _EPS_RE.search(p)]
+    subdirs = sorted(raw, key=lambda s: float(_EPS_RE.search(s).group(1)))
+    if not subdirs:
+        raise SystemExit(f"no attackB-* directories with eps_img* under {args.sweep_dir}")
     n = len(subdirs)
     plt.rcParams.update({"font.size": 11})
 

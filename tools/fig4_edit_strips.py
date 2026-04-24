@@ -52,8 +52,11 @@ def main():
     args = p.parse_args()
 
     prefix = "attackA" if args.attack == "A" else "attackB"
-    subdirs = sorted(glob.glob(os.path.join(args.sweep_dir, f"{prefix}-*")),
-                     key=lambda s: float(_EPS_RE.search(s).group(1)))
+    raw = glob.glob(os.path.join(args.sweep_dir, f"{prefix}-*"))
+    raw = [p for p in raw if os.path.isdir(p) and _EPS_RE.search(p)]
+    subdirs = sorted(raw, key=lambda s: float(_EPS_RE.search(s).group(1)))
+    if not subdirs:
+        raise SystemExit(f"no {prefix}-* directories with eps* under {args.sweep_dir}")
     n_eps = len(subdirs)
 
     strips = []
