@@ -142,22 +142,59 @@ def _apply_JtJ(edit, t, xt, v, mask):
     return JtJv
 
 
-def _power_iter_diff(edit, t, xt, v_init, mask, *, K=3, eps=1e-12):
-    """K-step differentiable power iteration of J(xt)^T J(xt). Warm-starts
-    from v_init (typically v_target) so the returned surrogate sits near
-    v_init when multiple singular directions are present.
+def _power_iter_diff(edit, t, xt, v_init, mask, *, K=3, eps=1e-12,
+                     warmup_no_grad=True):
+    """K-step power iteration of J(xt)^T J(xt). Warm-starts from v_init
+    (typically v_target) so the returned surrogate sits near v_init when
+    multiple singular directions are present.
+
+    Memory mode (warmup_no_grad=True, default):
+        Runs the first K-1 power iterations under torch.no_grad() to converge
+        the surrogate to the leading eigenvector of J^T J at xt, then runs ONE
+        grad-enabled iteration. Activation memory is therefore O(1 UNet
+        forward+backward) rather than O(K UNet forward+backwards), enabling
+        K=10..15 on a single 16-32GB GPU.
+
+        At convergence the gradient of the leading eigenvector w.r.t. xt is
+        dominated by the final J^T J application (this is the standard
+        implicit-differentiation-through-power-iteration argument used in
+        differentiable SVD libraries). Earlier iterations contribute O(eps)
+        corrections that become negligible as v converges.
+
+    Memory mode (warmup_no_grad=False, legacy):
+        All K iterations are differentiable. Memory grows as O(K). Only safe
+        for K <= 3 on 32GB GPUs in this pipeline.
 
     Gradients propagate through xt (and thus through delta_img in the
-    outer PGD). v_init itself is treated as a constant (we detach it) --
-    we only need gradients through xt.
+    outer PGD). v_init itself is treated as a constant (we detach it).
     """
-    # Fresh leaf with grad: needed so autograd.grad(..., inputs=v0) works.
-    v0 = v_init.detach().clone().requires_grad_(True)
-    v = v0 / v0.flatten().norm().clamp(min=eps)
-    for _ in range(K):
-        w = _apply_JtJ(edit, t, xt, v, mask)
-        v = w / w.flatten().norm().clamp(min=eps)
-    return v
+    if warmup_no_grad and K > 1:
+        with torch.no_grad():
+            v = v_init.detach().clone()
+            v = v / v.flatten().norm().clamp(min=eps)
+            for _ in range(K - 1):
+                Jv = _jvp_x0(edit, t, xt.detach(), v, mask)
+                # closed-form J^T J without autograd: another JVP via vjp.
+                # Easier: reuse _apply_JtJ but call it through a small leaf.
+                v_leaf = v.detach().clone().requires_grad_(True)
+                Jv_leaf = _jvp_x0(edit, t, xt.detach(), v_leaf, mask)
+                JtJv = torch.autograd.grad(
+                    outputs=(Jv_leaf * Jv_leaf).sum() * 0.5,
+                    inputs=v_leaf,
+                    create_graph=False,
+                    retain_graph=False,
+                )[0]
+                v = JtJv / JtJv.flatten().norm().clamp(min=eps)
+        v_warm = v.detach()
+    else:
+        v_warm = v_init.detach().clone()
+        v_warm = v_warm / v_warm.flatten().norm().clamp(min=eps)
+
+    # Final grad-enabled step: gradient flows from the returned tensor back
+    # through xt (which itself depends on delta_img in the outer PGD).
+    v_leaf = v_warm.detach().clone().requires_grad_(True)
+    JtJv = _apply_JtJ(edit, t, xt, v_leaf, mask)
+    return JtJv / JtJv.flatten().norm().clamp(min=eps)
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +299,12 @@ def pgd_attack_b(edit, x0, xt_clean, eps_ref, t, mask, v_clean, *,
             delta_img_new = _step(delta_img, grad, alpha_img, "linf")
             delta_img_new = _project(delta_img_new, eps_img, "linf")
         delta_img.data.copy_(delta_img_new)
+
+        # Defragment the CUDA allocator between PGD steps. This is essentially
+        # free in wall time and prevents the gradual fragmentation that pushes
+        # K=10..15 in-loop GPM hijack runs over the per-process memory limit.
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         history.append({
             "step":               step_idx,
