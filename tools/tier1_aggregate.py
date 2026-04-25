@@ -90,15 +90,35 @@ def aggregate_d2(samples: list[str], note_b_prefix: str) -> pd.DataFrame:
     raw = pd.concat(dfs, ignore_index=True)
     method_col = "purify_method" if "purify_method" in raw.columns else "method"
     param_col = "purify_param" if "purify_param" in raw.columns else "param"
-    eps_col = "eps_img" if "eps_img" in raw.columns else "eps"
-    agg = raw.groupby([method_col, param_col, eps_col]).agg(
+
+    # Resolve / synthesize an `eps` column. The preferred source is an explicit
+    # column; otherwise we parse it out of the per-row `run` string (the format
+    # produced by phase3_defense_purify.py is e.g. "attackB-linf-eps_img0.031-40steps").
+    if "eps_img" in raw.columns:
+        raw["eps"] = raw["eps_img"]
+    elif "eps" not in raw.columns:
+        import re as _re
+        eps_re = _re.compile(r"eps(?:_img)?([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)")
+        def _parse(s):
+            m = eps_re.search(str(s))
+            return float(m.group(1)) if m else float("nan")
+        raw["eps"] = raw["run"].apply(_parse)
+
+    # Synthesize defense_reduction_pct if absent.
+    if "defense_reduction_pct" not in raw.columns:
+        und = raw["misalign_undefended"].clip(lower=1e-6)
+        raw["defense_reduction_pct"] = 100.0 * (raw["misalign_undefended"] - raw["misalign_defended"]) / und
+
+    agg = raw.groupby([method_col, param_col, "eps"]).agg(
         misalign_mean=("misalign_defended", "mean"),
         misalign_std=("misalign_defended", "std"),
         reduction_mean=("defense_reduction_pct", "mean"),
         reduction_std=("defense_reduction_pct", "std"),
+        psnr_mean=("psnr_purify_clean", "mean"),
         n=("sample_idx", "nunique"),
     ).reset_index()
-    agg.columns = ["method", "param", "eps", "mis_mean", "mis_std", "red_mean", "red_std", "n"]
+    agg.columns = ["method", "param", "eps", "mis_mean", "mis_std",
+                   "red_mean", "red_std", "psnr_mean", "n"]
     return agg
 
 
