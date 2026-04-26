@@ -140,7 +140,9 @@ def main() -> None:
     for spec in args.strip:
         if "=" not in spec:
             raise SystemExit(f"bad --strip; need 'label=path' got {spec!r}")
-        label, target = spec.split("=", 1)
+        # rsplit on the LAST '=' so labels can contain '=' (e.g. 'eps=0.031').
+        # File paths never contain '=' so this is unambiguous.
+        label, target = spec.rsplit("=", 1)
         label = label.strip()
         path = _resolve_strip(target.strip())
         per_frame = per_frame_changes(path, mask)
