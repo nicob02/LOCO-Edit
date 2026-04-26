@@ -122,24 +122,34 @@ def _forward_closed_form(edit, x0, eps_ref, t):
 #   inloop_gpm (K=3)  : ~6 JVP-scale ops  (3 * (1 JVP + 1 backward) )
 # i.e. roughly 3-5x the cost of the proxy loss. Not 10x. Safe for 40 PGD steps.
 
-def _apply_JtJ(edit, t, xt, v, mask):
-    """Differentiable action of J(xt)^T J(xt) on v. Returns a tensor
-    shaped like v. Gradients flow through both xt and v (via the
-    create_graph=True autograd.grad call).
+def _apply_JtJ(edit, t, xt, v, mask, *, create_graph: bool = True):
+    """Apply M(xt) @ q  where  M(xt) := J(xt)^T J(xt)  and  J = ∂x0/∂xt.
 
-    IMPORTANT: v must have requires_grad=True and be part of an autograd
-    graph that can be back-propagated through. The caller (_power_iter_diff)
-    is responsible for ensuring this.
+    Correct recipe (works with torch.func.jvp):
+        Let q be a *constant* tangent (detach v so JVP does not treat q as a
+        dual variable).  Define g(x) := J(x) q.  Then
+            M q = ∇_x ( 1/2 ||g(x)||^2 )
+        is the Gauss–Newton / J^T J action.
+
+    Why not grad_{v}?  torch.func.jvp(f,(x,),(v,)) differentiates f w.r.t.
+    the primal x only; the tangent v is not an autograd leaf, so
+    autograd.grad(||J v||^2, v) often raises
+        RuntimeError: ... does not require grad and does not have a grad_fn
+    exactly as seen on the K=15 hijack run.
+
+    Gradients w.r.t. xt (and thus delta_img in the outer PGD) are enabled
+    when create_graph=True on the final matvec in _power_iter_diff.
     """
-    Jv = _jvp_x0(edit, t, xt, v, mask)
-    # J^T J v = grad_{v} ( 1/2 ||Jv||^2 )
-    JtJv = torch.autograd.grad(
-        outputs=(Jv * Jv).sum() * 0.5,
-        inputs=v,
-        create_graph=True,
+    q = v.detach()
+    Jv = _jvp_x0(edit, t, xt, q, mask)
+    loss = (Jv * Jv).sum() * 0.5
+    JtJq, = torch.autograd.grad(
+        loss,
+        xt,
+        create_graph=create_graph,
         retain_graph=True,
-    )[0]
-    return JtJv
+    )
+    return JtJq
 
 
 def _power_iter_diff(edit, t, xt, v_init, mask, *, K=3, eps=1e-12,
@@ -149,11 +159,12 @@ def _power_iter_diff(edit, t, xt, v_init, mask, *, K=3, eps=1e-12,
     multiple singular directions are present.
 
     Memory mode (warmup_no_grad=True, default):
-        Runs the first K-1 power iterations under torch.no_grad() to converge
-        the surrogate to the leading eigenvector of J^T J at xt, then runs ONE
-        grad-enabled iteration. Activation memory is therefore O(1 UNet
-        forward+backward) rather than O(K UNet forward+backwards), enabling
-        K=10..15 on a single 16-32GB GPU.
+        Runs the first K-1 matvecs on a detached snapshot xt0 = xt.detach().
+        Each matvec is one forward JVP + one backward grad w.r.t. a *fresh*
+        leaf xt_w (clone of xt0), so no long autograd chain links the warmup
+        steps to each other or to delta_img.  The final matvec uses the real
+        xt (connected to delta_img) with create_graph=True.  Net memory is
+        O(1) in K, enabling K=10..15 on typical 40–80GB GPUs.
 
         At convergence the gradient of the leading eigenvector w.r.t. xt is
         dominated by the final J^T J application (this is the standard
@@ -169,31 +180,24 @@ def _power_iter_diff(edit, t, xt, v_init, mask, *, K=3, eps=1e-12,
     outer PGD). v_init itself is treated as a constant (we detach it).
     """
     if warmup_no_grad and K > 1:
-        with torch.no_grad():
-            v = v_init.detach().clone()
-            v = v / v.flatten().norm().clamp(min=eps)
-            for _ in range(K - 1):
-                Jv = _jvp_x0(edit, t, xt.detach(), v, mask)
-                # closed-form J^T J without autograd: another JVP via vjp.
-                # Easier: reuse _apply_JtJ but call it through a small leaf.
-                v_leaf = v.detach().clone().requires_grad_(True)
-                Jv_leaf = _jvp_x0(edit, t, xt.detach(), v_leaf, mask)
-                JtJv = torch.autograd.grad(
-                    outputs=(Jv_leaf * Jv_leaf).sum() * 0.5,
-                    inputs=v_leaf,
-                    create_graph=False,
-                    retain_graph=False,
-                )[0]
-                v = JtJv / JtJv.flatten().norm().clamp(min=eps)
-        v_warm = v.detach()
+        # Cheap convergence of the Rayleigh iterate at the *current* xt:
+        # each matvec uses xt.detach().requires_grad_(True) so we do not
+        # build a K-deep graph linking successive warmup steps to delta_img.
+        v = v_init.detach().clone()
+        v = v / v.flatten().norm().clamp(min=eps)
+        xt0 = xt.detach()
+        for _ in range(K - 1):
+            xt_w = xt0.clone().requires_grad_(True)
+            w = _apply_JtJ(edit, t, xt_w, v, mask, create_graph=False)
+            v = w.detach() / w.detach().flatten().norm().clamp(min=eps)
+        v_warm = v
     else:
         v_warm = v_init.detach().clone()
         v_warm = v_warm / v_warm.flatten().norm().clamp(min=eps)
 
-    # Final grad-enabled step: gradient flows from the returned tensor back
-    # through xt (which itself depends on delta_img in the outer PGD).
-    v_leaf = v_warm.detach().clone().requires_grad_(True)
-    JtJv = _apply_JtJ(edit, t, xt, v_leaf, mask)
+    # Final step: one M @ q with full second-order graph through the *true*
+    # xt (connected to delta_img in the outer PGD).
+    JtJv = _apply_JtJ(edit, t, xt, v_warm, mask, create_graph=True)
     return JtJv / JtJv.flatten().norm().clamp(min=eps)
 
 
