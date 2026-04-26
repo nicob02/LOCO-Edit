@@ -56,6 +56,21 @@ NOTE="${4:?need NOTE}"
 ATTACK_B_RESULT="${5:?need ATTACK_B_RESULT path}"
 PURIFY_PLAN="${6:-bits:4 jpeg:75 blur:1.5}"
 
+# The Python script gets executed with CWD=$REPO_ROOT/src (see line below),
+# but the user typically passes ATTACK_B_RESULT as a path relative to the
+# repo root (e.g. 'src/runs/...'). Absolutise it now so torch.load() finds
+# it regardless of where Python is run from.
+if [[ "$ATTACK_B_RESULT" != /* ]]; then
+  ATTACK_B_RESULT="$REPO_ROOT/$ATTACK_B_RESULT"
+fi
+if [[ ! -f "$ATTACK_B_RESULT" ]]; then
+  echo "ERROR: ATTACK_B_RESULT does not exist: $ATTACK_B_RESULT" >&2
+  exit 2
+fi
+if [[ "$CELEBA_ROOT" != /* ]]; then
+  CELEBA_ROOT="$REPO_ROOT/$CELEBA_ROOT"
+fi
+
 export HF_HOME="${HF_HOME:-$REPO_ROOT/.hf_cache}"
 export TRANSFORMERS_CACHE="$HF_HOME"
 mkdir -p "$HF_HOME"
