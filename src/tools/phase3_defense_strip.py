@@ -163,9 +163,43 @@ def main():
     print(f"[defense-strip] plans = {plans}")
 
     # The blob lives in <run_dir>/attackB_result.pt; we save defended strips
-    # into <run_dir>/<EXP_NAME>-pc_0.png next to it.
+    # into <run_dir>/<EXP_NAME>.png next to it.
     run_dir = os.path.dirname(os.path.abspath(args.attack_b_result))
     print(f"[defense-strip] writing strips next to {run_dir}")
+
+    # Render the *undefended attacked* baseline strip once (same naming as
+    # phase2_attack_b._render_attacked_edit). This is the strip that should
+    # have been written by Phase 2 but wasn't (attack_render_edit was off).
+    # We pull xt_adv / v_adv directly from the blob, so no inversion or GPM
+    # is needed -- adds ~10-20 s to the job.
+    if args.also_render_attacked_baseline:
+        try:
+            xt_adv_blob = blob["xt_adv"].to(device=edit.device, dtype=edit.dtype)
+            v_adv_blob  = blob["v_adv"].to(device=edit.device, dtype=edit.dtype)
+            v_adv_blob  = v_adv_blob.view_as(xt_adv_blob)
+            # Pull eps/norm tags from the blob's args (they are saved verbatim
+            # under "args" by phase2_attack_b at line ~599).
+            b_args = blob.get("args", {}) or {}
+            eps_tag = b_args.get("attack_b_eps_img",
+                                 b_args.get("attack_eps", 0.0))
+            norm_tag = b_args.get("attack_norm",
+                                  b_args.get("attack_b_norm", "linf"))
+            label = (
+                f"attackB-{args.sample_idx}-{args.choose_sem}"
+                f"-eps{float(eps_tag):g}-{norm_tag}-edit_strip"
+            )
+            print(f"[defense-strip] rendering attacked baseline -> {label}.png")
+            prev = edit.result_folder
+            edit.result_folder = run_dir
+            try:
+                _render_strip_at(edit, xt_adv_blob, v_adv_blob, t,
+                                 args=args, label=label)
+            finally:
+                edit.result_folder = prev
+            del xt_adv_blob, v_adv_blob
+            gc.collect(); torch.cuda.empty_cache()
+        except Exception as exc:
+            print(f"[defense-strip] WARN: attacked baseline render failed: {exc}")
 
     summary = []
     for (method, param) in plans:

@@ -205,6 +205,10 @@ def parse_args():
                         required=False,
                         help='Space-separated list of method:param-csv tokens, '
                              'e.g. "jpeg:75,90 blur:0.5,1.0 bits:4,6".')
+    parser.add_argument('--also_render_attacked_baseline', type=str2bool,
+                        default='True', required=False,
+                        help='In phase3_defense_strip, also render the '
+                             'undefended attacked LOCO strip from the blob.')
 
     args = parser.parse_args()
     return args
