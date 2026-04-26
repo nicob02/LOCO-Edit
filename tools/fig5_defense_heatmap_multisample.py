@@ -58,10 +58,28 @@ def _load_all(paths: list[str]) -> pd.DataFrame:
     return pd.concat(dfs, ignore_index=True)
 
 
+def _expand_globs(specs: list[str]) -> list[str]:
+    """Glob-expand each spec. Supports comma-separated globs within one --flag."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for spec in specs:
+        for pat in spec.split(","):
+            pat = pat.strip()
+            if not pat:
+                continue
+            for path in glob.glob(pat):
+                if path not in seen:
+                    seen.add(path)
+                    out.append(path)
+    return sorted(out)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--d2_csv_glob", required=True,
-                   help="Quoted glob matching defense_D2.csv files to aggregate.")
+    p.add_argument("--d2_csv_glob", required=True, action="append",
+                   help=("Quoted glob matching defense_D2.csv files. "
+                         "May be passed multiple times; comma-separated globs "
+                         "inside one flag are also accepted."))
     p.add_argument("--out", required=True)
     p.add_argument("--title", default="D2 reduction% across samples")
     p.add_argument(
@@ -74,9 +92,14 @@ def main() -> None:
     p.add_argument("--vmax", type=float, default=100.0)
     args = p.parse_args()
 
-    paths = sorted(glob.glob(args.d2_csv_glob))
+    paths = _expand_globs(args.d2_csv_glob)
     if not paths:
-        raise SystemExit(f"[heatmap-ms] no CSVs match: {args.d2_csv_glob}")
+        raise SystemExit(
+            f"[heatmap-ms] no CSVs match: {args.d2_csv_glob}\n"
+            "  Note: Python glob does NOT understand bash brace expansion {a,b,c}.\n"
+            "  Pass --d2_csv_glob multiple times instead, or use a wildcard that\n"
+            "  covers all the folders (e.g. '*phase2_attackB_*s4729/.../*.csv')."
+        )
     print(f"[heatmap-ms] N CSVs = {len(paths)}")
     for q in paths:
         print(f"            {q}")

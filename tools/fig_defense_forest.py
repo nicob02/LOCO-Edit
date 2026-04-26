@@ -37,9 +37,26 @@ def _eps_from_run(run: str) -> float:
     return float(m.group(1)) if m else float("nan")
 
 
+def _expand_globs(specs: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for spec in specs:
+        for pat in spec.split(","):
+            pat = pat.strip()
+            if not pat:
+                continue
+            for path in glob.glob(pat):
+                if path not in seen:
+                    seen.add(path)
+                    out.append(path)
+    return sorted(out)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--d2_csv_glob", required=True)
+    p.add_argument("--d2_csv_glob", required=True, action="append",
+                   help=("Glob matching defense_D2.csv files. May be passed "
+                         "multiple times; comma-separated globs are also accepted."))
     p.add_argument("--eps", type=float, default=0.031)
     p.add_argument("--out", required=True)
     p.add_argument("--title", default="")
@@ -51,9 +68,13 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    paths = sorted(glob.glob(args.d2_csv_glob))
+    paths = _expand_globs(args.d2_csv_glob)
     if not paths:
-        raise SystemExit(f"[forest] no CSVs match: {args.d2_csv_glob}")
+        raise SystemExit(
+            f"[forest] no CSVs match: {args.d2_csv_glob}\n"
+            "  Note: Python glob does NOT understand bash brace expansion {a,b,c}.\n"
+            "  Pass --d2_csv_glob multiple times, or use a wildcard."
+        )
     print(f"[forest] N CSVs = {len(paths)}")
 
     rows = []

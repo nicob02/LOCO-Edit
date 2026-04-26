@@ -54,9 +54,26 @@ def _parse_plans(arg: str) -> list[tuple[str, str, float, str, str]]:
     return out
 
 
+def _expand_globs(specs: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for spec in specs:
+        for pat in spec.split(","):
+            pat = pat.strip()
+            if not pat:
+                continue
+            for path in glob.glob(pat):
+                if path not in seen:
+                    seen.add(path)
+                    out.append(path)
+    return sorted(out)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--d2_csv_glob", required=True)
+    p.add_argument("--d2_csv_glob", required=True, action="append",
+                   help=("Glob matching defense_D2.csv files. May be passed "
+                         "multiple times; comma-separated globs are also accepted."))
     p.add_argument("--out", required=True)
     p.add_argument("--title", default="D2 defenses across samples")
     p.add_argument("--plans", default="", help="Optional 'm:p,m:p' override.")
@@ -64,9 +81,13 @@ def main() -> None:
 
     plans = _parse_plans(args.plans)
 
-    paths = sorted(glob.glob(args.d2_csv_glob))
+    paths = _expand_globs(args.d2_csv_glob)
     if not paths:
-        raise SystemExit(f"[fig8v2] no CSVs match: {args.d2_csv_glob}")
+        raise SystemExit(
+            f"[fig8v2] no CSVs match: {args.d2_csv_glob}\n"
+            "  Note: Python glob does NOT understand bash brace expansion {a,b,c}.\n"
+            "  Pass --d2_csv_glob multiple times, or use a wildcard."
+        )
     print(f"[fig8v2] N CSVs = {len(paths)}  plans = {[p[0] for p in plans]}")
 
     dfs = []
