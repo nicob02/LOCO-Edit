@@ -21,17 +21,13 @@ render. By default we render the three plans we use in the report:
 
 Outputs
 -------
-For each (method, param) we write a dedicated subfolder
+For each (method, param) we rely on edit.DDIMforwardsteps()'s built-in
+PNG saver to drop the canonical strip image as
 
-    <run_dir>/defenseD2-<method>-<param>-edit_strip/
-        defenseD2_strip.pt          (xt_full + metadata for repro)
+    <run_dir>/defenseD2-<method>-<param>-edit_strip.png
 
-and rely on edit.DDIMforwardsteps()'s built-in PNG saver to drop the
-canonical strip image as
-
-    <run_dir>/defenseD2-<method>-<param>-edit_strip-pc_0.png
-
-so the file naming is grep-friendly for the eval-locality script.
+next to the attackB_result.pt blob, so the file naming is
+grep-friendly for the eval-locality script.
 """
 from __future__ import annotations
 
