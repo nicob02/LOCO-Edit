@@ -45,6 +45,8 @@ def main() -> None:
                         "(read from attackB-linf-40steps-sweep.csv).")
     P.add_argument("--source_idx", type=int, default=None,
                    help="Optional source sample index, used in the legend.")
+    P.add_argument("--show_threshold", action="store_true",
+                   help="If set, draw the halfway-misalignment dotted line.")
     P.add_argument("--out", required=True)
     P.add_argument("--title", default="")
     args = P.parse_args()
@@ -70,14 +72,15 @@ def main() -> None:
         if args.source_idx is not None else
         f"source self-attack = {args.source_misalign:.2f}",
     )
-    # The misalignment 0.5 threshold is the natural "more wrong than right"
-    # boundary: when 1 - |cos| = 0.5, |cos| = 0.5, i.e. the perturbed
-    # direction has more component orthogonal to v_clean than parallel to it
-    # (subspace angle = 60 deg).
-    ax.axvline(
-        0.5, color="grey", lw=1.0, ls=":",
-        label=r"halfway-misalignment ($1-|\cos|=0.5$, 60$^\circ$ subspace angle)",
-    )
+    if args.show_threshold:
+        # The misalignment 0.5 threshold is the natural "more wrong than right"
+        # boundary: when 1 - |cos| = 0.5, |cos| = 0.5, i.e. the perturbed
+        # direction has more component orthogonal to v_clean than parallel to it
+        # (subspace angle = 60 deg).
+        ax.axvline(
+            0.5, color="grey", lw=1.0, ls=":",
+            label=r"halfway-misalignment ($1-|\cos|=0.5$)",
+        )
     ax.axvline(mean, color="black", lw=1.0, ls="-", alpha=0.6,
                label=f"transfer mean = {mean:.2f} ± {std:.2f}")
     ax.set_xlim(0, 1.0)

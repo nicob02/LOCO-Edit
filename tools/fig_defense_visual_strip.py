@@ -64,6 +64,10 @@ def main() -> None:
     P.add_argument("--bits", type=int, default=4)
     P.add_argument("--jpeg_q", type=int, default=75)
     P.add_argument("--blur_sigma", type=float, default=1.5)
+    P.add_argument("--amp_factor", type=float, default=30.0,
+                   help=("Multiplier used to amplify residuals "
+                         "(image - clean) so the eps=0.031 attack signal "
+                         "becomes visible. Default 30 ~ ε * amp ≈ 1.0."))
     P.add_argument("--title", default="What the defense does at the pixel level (eps_img=0.031)")
     args = P.parse_args()
 
@@ -74,17 +78,26 @@ def main() -> None:
     bits = bits_reduce(x_adv, args.bits)
     jpg = jpeg_reencode(x_adv, args.jpeg_q)
     blr = gauss_blur(x_adv, args.blur_sigma)
-    delta = (x_adv.astype(np.float32) - x_clean.astype(np.float32))
-    delta = (delta - delta.min()) / (delta.max() - delta.min() + 1e-8)
-    delta = (delta * 255).astype(np.uint8)
+
+    def amp_residual(im: np.ndarray, ref: np.ndarray, amp: float) -> np.ndarray:
+        """Return (im - ref) * amp clipped to [0,255], centered at gray."""
+        r = im.astype(np.float32) - ref.astype(np.float32)
+        r = r * float(amp) + 128.0
+        return np.clip(r, 0, 255).astype(np.uint8)
+
+    res_zero = np.full_like(x_clean, 128)
+    res_adv  = amp_residual(x_adv, x_clean, args.amp_factor)
+    res_bits = amp_residual(bits,  x_clean, args.amp_factor)
+    res_jpg  = amp_residual(jpg,   x_clean, args.amp_factor)
+    res_blr  = amp_residual(blr,   x_clean, args.amp_factor)
 
     plt.rcParams.update({"font.size": 12})
-    fig = plt.figure(figsize=(14.5, 10.5))
+    fig = plt.figure(figsize=(14.5, 14.5))
     gs = fig.add_gridspec(
-        4, 5,
-        height_ratios=[1.30, 1.30, 0.18, 0.95],
-        hspace=0.18, wspace=0.05,
-        left=0.04, right=0.99, top=0.92, bottom=0.04,
+        6, 5,
+        height_ratios=[1.30, 1.30, 0.10, 0.95, 0.10, 0.95],
+        hspace=0.16, wspace=0.05,
+        left=0.03, right=0.99, top=0.94, bottom=0.03,
     )
 
     ax_clean = fig.add_subplot(gs[0, :])
@@ -101,14 +114,15 @@ def main() -> None:
         fontsize=15, fontweight="bold", pad=8,
     )
 
-    # Centered bold row title for the zoom panels, in its own gridspec band.
-    ax_rowtitle = fig.add_subplot(gs[2, :])
-    ax_rowtitle.axis("off")
-    ax_rowtitle.text(
+    # ---------- Section (c): inputs to the LOCO pipeline ---------- #
+    ax_lbl_c = fig.add_subplot(gs[2, :]); ax_lbl_c.axis("off")
+    ax_lbl_c.text(
         0.5, 0.5,
-        r"(c) what the defense does at the pixel level",
-        ha="center", va="center", fontsize=15, fontweight="bold",
-        transform=ax_rowtitle.transAxes,
+        r"(c) inputs to the LOCO pipeline   "
+        r"(visually indistinguishable at $\varepsilon=0.031$)",
+        ha="center", va="center",
+        fontsize=14, fontweight="bold",
+        transform=ax_lbl_c.transAxes,
     )
 
     panels = [
@@ -122,6 +136,29 @@ def main() -> None:
         ax = fig.add_subplot(gs[3, k])
         ax.imshow(im); ax.axis("off")
         ax.set_title(lbl, fontsize=12.5, fontweight="bold")
+
+    # ---------- Section (d): perturbation visualised ---------- #
+    ax_lbl_d = fig.add_subplot(gs[4, :]); ax_lbl_d.axis("off")
+    ax_lbl_d.text(
+        0.5, 0.5,
+        rf"(d) perturbation visualised:  "
+        rf"$(\,\mathrm{{image}} - \mathrm{{clean}}\, x_0\,) \times {args.amp_factor:g}$",
+        ha="center", va="center",
+        fontsize=14, fontweight="bold",
+        transform=ax_lbl_d.transAxes,
+    )
+
+    residuals = [
+        (r"zero  (clean $-$ clean)",                       res_zero),
+        (rf"$\delta_{{\mathrm{{img}}}}\;\;\times{args.amp_factor:g}$",   res_adv),
+        (rf"bits:{args.bits} residual $\times{args.amp_factor:g}$",      res_bits),
+        (rf"jpeg:{args.jpeg_q} residual $\times{args.amp_factor:g}$",    res_jpg),
+        (rf"blur:{args.blur_sigma:g} residual $\times{args.amp_factor:g}$", res_blr),
+    ]
+    for k, (lbl, im) in enumerate(residuals):
+        ax = fig.add_subplot(gs[5, k])
+        ax.imshow(im); ax.axis("off")
+        ax.set_title(lbl, fontsize=12)
 
     fig.suptitle(args.title, fontsize=14, y=0.985)
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)

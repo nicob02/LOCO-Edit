@@ -26,6 +26,7 @@ import re
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.transforms as mtransforms
 
 
 _EPS_RE = re.compile(r"eps(?:_img)?([0-9.]+)")
@@ -106,41 +107,63 @@ def main() -> None:
     agg["std"] = agg["std"].fillna(0.0)
 
     plt.rcParams.update({"font.size": 12})
-    fig, ax = plt.subplots(figsize=(10.0, 0.55 * len(agg) + 1.8))
-    ax.barh(agg.index, agg["mean"], xerr=agg["std"],
-            color="#4878d0", edgecolor="black",
-            error_kw={"capsize": 5, "elinewidth": 1.2})
+    fig = plt.figure(figsize=(12.5, 0.6 * len(agg) + 2.0))
+    # Bars take the left ~62%, value+stat columns take the right ~38%.
+    fig.subplots_adjust(left=0.13, right=0.62, top=0.86, bottom=0.18)
+    ax = fig.add_subplot(111)
+    ax.barh(
+        agg.index, agg["mean"], xerr=agg["std"],
+        color="#4878d0", edgecolor="black",
+        error_kw={"capsize": 5, "elinewidth": 1.2},
+    )
     ax.axvline(0, color="black", lw=1)
 
-    # Place each label fully outside the error bar so it never collides with
-    # the bar fill or the y-axis labels.
-    pad = 6.0
-    label_x_pos = 0.0
-    label_x_neg = 0.0
+    # Snug xlim so the bar+errbar fills the plotting area cleanly.
+    bar_lo = float((agg["mean"] - agg["std"]).min())
+    bar_hi = float((agg["mean"] + agg["std"]).max())
+    span = max(bar_hi - bar_lo, 1.0)
+    ax.set_xlim(bar_lo - 0.10 * span, bar_hi + 0.10 * span)
+
+    # Right-side text columns at fixed axes-fraction positions.
+    trans = mtransforms.blended_transform_factory(ax.transAxes, ax.transData)
     for i, (_, row) in enumerate(agg.iterrows()):
-        end = row["mean"] + (row["std"] if row["mean"] >= 0 else -row["std"])
-        if row["mean"] >= 0:
-            x_text, ha = end + pad, "left"
-            label_x_pos = max(label_x_pos, x_text + 60)
-        else:
-            x_text, ha = end - pad, "right"
-            label_x_neg = min(label_x_neg, x_text - 60)
+        # column 1 (just outside plot, right): reduction% ± std
         ax.text(
-            x_text, i,
-            f"{row['mean']:+.0f}% ± {row['std']:.0f}    "
-            f"PSNR {row['psnr']:.0f} dB    N={int(row['n'])}",
-            va="center", ha=ha, fontsize=11,
+            1.04, i, f"{row['mean']:+.0f}% ± {row['std']:.0f}",
+            transform=trans, va="center", ha="left",
+            fontsize=12, fontweight="bold", clip_on=False,
+        )
+        # column 2: PSNR
+        ax.text(
+            1.30, i, f"PSNR {row['psnr']:.0f} dB",
+            transform=trans, va="center", ha="left",
+            fontsize=11, color="#444", clip_on=False,
+        )
+        # column 3: N
+        ax.text(
+            1.52, i, f"N = {int(row['n'])}",
+            transform=trans, va="center", ha="left",
+            fontsize=11, color="#444", clip_on=False,
         )
 
-    cur_lo, cur_hi = ax.get_xlim()
-    ax.set_xlim(min(cur_lo, label_x_neg), max(cur_hi, label_x_pos))
+    # Column headers (one row above the top bar).
+    header_y = len(agg) - 0.4
+    ax.text(1.04, header_y, "reduction%", transform=trans,
+            va="bottom", ha="left", fontsize=11, fontweight="bold",
+            color="#222", clip_on=False)
+    ax.text(1.30, header_y, "purify cost", transform=trans,
+            va="bottom", ha="left", fontsize=11, fontweight="bold",
+            color="#222", clip_on=False)
+    ax.text(1.52, header_y, "samples", transform=trans,
+            va="bottom", ha="left", fontsize=11, fontweight="bold",
+            color="#222", clip_on=False)
+
     ax.set_xlabel(
         rf"reduction%   at  $\varepsilon_{{\mathrm{{img}}}}={args.eps:g}$"
         r"    (positive = defense helped)"
     )
     ax.set_title(args.title or f"D2 defense ranking at eps={args.eps:g}  (N CSVs={len(paths)})")
     ax.grid(axis="x", alpha=0.3)
-    fig.tight_layout()
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     fig.savefig(args.out, dpi=200, bbox_inches="tight")
     print(f"[forest] -> {args.out}")
