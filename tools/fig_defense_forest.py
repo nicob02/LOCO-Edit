@@ -106,19 +106,38 @@ def main() -> None:
     agg["std"] = agg["std"].fillna(0.0)
 
     plt.rcParams.update({"font.size": 12})
-    fig, ax = plt.subplots(figsize=(8.5, 0.55 * len(agg) + 1.6))
-    bars = ax.barh(agg.index, agg["mean"], xerr=agg["std"],
-                   color="#4878d0", edgecolor="black", capsize=5)
+    fig, ax = plt.subplots(figsize=(10.0, 0.55 * len(agg) + 1.8))
+    ax.barh(agg.index, agg["mean"], xerr=agg["std"],
+            color="#4878d0", edgecolor="black",
+            error_kw={"capsize": 5, "elinewidth": 1.2})
     ax.axvline(0, color="black", lw=1)
-    for i, (lbl, row) in enumerate(agg.iterrows()):
-        side = "left" if row["mean"] >= 0 else "right"
-        x_text = row["mean"] + (5 if row["mean"] >= 0 else -5)
+
+    # Place each label fully outside the error bar so it never collides with
+    # the bar fill or the y-axis labels.
+    pad = 6.0
+    label_x_pos = 0.0
+    label_x_neg = 0.0
+    for i, (_, row) in enumerate(agg.iterrows()):
+        end = row["mean"] + (row["std"] if row["mean"] >= 0 else -row["std"])
+        if row["mean"] >= 0:
+            x_text, ha = end + pad, "left"
+            label_x_pos = max(label_x_pos, x_text + 60)
+        else:
+            x_text, ha = end - pad, "right"
+            label_x_neg = min(label_x_neg, x_text - 60)
         ax.text(
             x_text, i,
-            f"{row['mean']:+.0f}% ±{row['std']:.0f}   PSNR {row['psnr']:.0f} dB   N={int(row['n'])}",
-            va="center", ha=side, fontsize=11,
+            f"{row['mean']:+.0f}% ± {row['std']:.0f}    "
+            f"PSNR {row['psnr']:.0f} dB    N={int(row['n'])}",
+            va="center", ha=ha, fontsize=11,
         )
-    ax.set_xlabel(f"reduction%   at  $\\varepsilon_\\mathrm{{img}}$={args.eps:g}   (positive = defense helped)")
+
+    cur_lo, cur_hi = ax.get_xlim()
+    ax.set_xlim(min(cur_lo, label_x_neg), max(cur_hi, label_x_pos))
+    ax.set_xlabel(
+        rf"reduction%   at  $\varepsilon_{{\mathrm{{img}}}}={args.eps:g}$"
+        r"    (positive = defense helped)"
+    )
     ax.set_title(args.title or f"D2 defense ranking at eps={args.eps:g}  (N CSVs={len(paths)})")
     ax.grid(axis="x", alpha=0.3)
     fig.tight_layout()

@@ -78,32 +78,52 @@ def main() -> None:
     delta = (delta - delta.min()) / (delta.max() - delta.min() + 1e-8)
     delta = (delta * 255).astype(np.uint8)
 
-    plt.rcParams.update({"font.size": 11})
-    fig = plt.figure(figsize=(14, 9))
-    gs = fig.add_gridspec(3, 5, height_ratios=[1.2, 1.2, 0.95],
-                          hspace=0.22, wspace=0.04)
+    plt.rcParams.update({"font.size": 12})
+    fig = plt.figure(figsize=(14.5, 10.5))
+    gs = fig.add_gridspec(
+        4, 5,
+        height_ratios=[1.30, 1.30, 0.18, 0.95],
+        hspace=0.18, wspace=0.05,
+        left=0.04, right=0.99, top=0.92, bottom=0.04,
+    )
 
     ax_clean = fig.add_subplot(gs[0, :])
     ax_clean.imshow(cs); ax_clean.axis("off")
-    ax_clean.set_title("clean LOCO edit strip   (-2dλ ... +2dλ)", fontsize=12)
+    ax_clean.set_title(
+        r"(a) clean LOCO edit strip   $-2\,\mathrm{d}\lambda \ldots +2\,\mathrm{d}\lambda$",
+        fontsize=15, fontweight="bold", pad=8,
+    )
 
     ax_attacked = fig.add_subplot(gs[1, :])
     ax_attacked.imshow(asr); ax_attacked.axis("off")
-    ax_attacked.set_title("attacked LOCO edit strip   (eps_img=0.031, 40 PGD steps)", fontsize=12)
+    ax_attacked.set_title(
+        r"(b) attacked LOCO edit strip   ($\varepsilon_{\mathrm{img}}=0.031$, 40 PGD steps)",
+        fontsize=15, fontweight="bold", pad=8,
+    )
+
+    # Centered bold row title for the zoom panels, in its own gridspec band.
+    ax_rowtitle = fig.add_subplot(gs[2, :])
+    ax_rowtitle.axis("off")
+    ax_rowtitle.text(
+        0.5, 0.5,
+        r"(c) what the defense does at the pixel level",
+        ha="center", va="center", fontsize=15, fontweight="bold",
+        transform=ax_rowtitle.transAxes,
+    )
 
     panels = [
-        ("clean x_0",          x_clean),
-        ("adversarial x_0",    x_adv),
-        (f"bits:{args.bits}(adv)",   bits),
-        (f"jpeg:{args.jpeg_q}(adv)", jpg),
-        (f"blur:{args.blur_sigma:g}(adv)", blr),
+        (r"clean $x_0$",                                          x_clean),
+        (r"adversarial $x_0$",                                    x_adv),
+        (rf"bits:{args.bits}  ($x_{{0,\mathrm{{adv}}}}$)",        bits),
+        (rf"jpeg:{args.jpeg_q}  ($x_{{0,\mathrm{{adv}}}}$)",      jpg),
+        (rf"blur:{args.blur_sigma:g}  ($x_{{0,\mathrm{{adv}}}}$)", blr),
     ]
     for k, (lbl, im) in enumerate(panels):
-        ax = fig.add_subplot(gs[2, k])
-        ax.imshow(im); ax.axis("off"); ax.set_title(lbl, fontsize=11)
+        ax = fig.add_subplot(gs[3, k])
+        ax.imshow(im); ax.axis("off")
+        ax.set_title(lbl, fontsize=12.5, fontweight="bold")
 
-    fig.suptitle(args.title, fontsize=13, y=1.0)
-    fig.tight_layout()
+    fig.suptitle(args.title, fontsize=14, y=0.985)
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     fig.savefig(args.out, dpi=180, bbox_inches="tight")
     print(f"[def-vis] -> {args.out}")

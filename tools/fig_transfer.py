@@ -43,6 +43,8 @@ def main() -> None:
     P.add_argument("--source_misalign", type=float, required=True,
                    help="Undefended source-self misalignment at the same eps "
                         "(read from attackB-linf-40steps-sweep.csv).")
+    P.add_argument("--source_idx", type=int, default=None,
+                   help="Optional source sample index, used in the legend.")
     P.add_argument("--out", required=True)
     P.add_argument("--title", default="")
     args = P.parse_args()
@@ -56,23 +58,34 @@ def main() -> None:
     std = df["misalignment"].std()
 
     plt.rcParams.update({"font.size": 12})
-    fig, ax = plt.subplots(figsize=(8.5, 0.55 * len(df) + 1.6))
-    bars = ax.barh([str(int(t)) for t in df["target_idx"]],
-                   df["misalignment"], color="#1f77b4", edgecolor="black")
+    fig, ax = plt.subplots(figsize=(9.5, 0.55 * len(df) + 1.8))
+    ax.barh([str(int(t)) for t in df["target_idx"]],
+            df["misalignment"], color="#1f77b4", edgecolor="black")
     for i, m in enumerate(df["misalignment"]):
-        ax.text(m + 0.01, i, f"{m:.2f}", va="center", fontsize=11)
-    ax.axvline(args.source_misalign, color="red", lw=1.5, ls="--",
-               label=f"source self-attack = {args.source_misalign:.2f}")
-    ax.axvline(0.5, color="grey", lw=1.0, ls=":",
-               label=r"45$^\circ$ rotation threshold")
+        ax.text(m + 0.012, i, f"{m:.2f}", va="center", fontsize=11)
+    ax.axvline(
+        args.source_misalign, color="red", lw=1.6, ls="--",
+        label=(f"source self-attack on idx={args.source_idx}  "
+               f"= {args.source_misalign:.2f}")
+        if args.source_idx is not None else
+        f"source self-attack = {args.source_misalign:.2f}",
+    )
+    # The misalignment 0.5 threshold is the natural "more wrong than right"
+    # boundary: when 1 - |cos| = 0.5, |cos| = 0.5, i.e. the perturbed
+    # direction has more component orthogonal to v_clean than parallel to it
+    # (subspace angle = 60 deg).
+    ax.axvline(
+        0.5, color="grey", lw=1.0, ls=":",
+        label=r"halfway-misalignment ($1-|\cos|=0.5$, 60$^\circ$ subspace angle)",
+    )
     ax.axvline(mean, color="black", lw=1.0, ls="-", alpha=0.6,
                label=f"transfer mean = {mean:.2f} ± {std:.2f}")
     ax.set_xlim(0, 1.0)
     ax.set_xlabel(r"misalignment under transferred $\delta_{\mathrm{img}}$")
     ax.set_ylabel("target sample idx")
-    ax.set_title(args.title or "Cross-sample δ transfer (eps_img=0.031, source=4729)")
+    ax.set_title(args.title or "Cross-sample δ transfer  (eps_img=0.031)")
     ax.grid(axis="x", alpha=0.3)
-    ax.legend(loc="lower right")
+    ax.legend(loc="lower right", framealpha=0.95, fontsize=10)
     fig.tight_layout()
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     fig.savefig(args.out, dpi=200, bbox_inches="tight")

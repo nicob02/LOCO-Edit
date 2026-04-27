@@ -209,6 +209,14 @@ def parse_args():
                         default='True', required=False,
                         help='In phase3_defense_strip, also render the '
                              'undefended attacked LOCO strip from the blob.')
+    parser.add_argument('--also_render_source', type=str2bool,
+                        default='True', required=False,
+                        help='In phase2_transfer_strip, also render the '
+                             'source self-attacked strip from the blob.')
+    parser.add_argument('--also_compute_misalign', type=str2bool,
+                        default='True', required=False,
+                        help='In phase2_transfer_strip, also recover each '
+                             "target's clean basis to report misalignment.")
 
     args = parser.parse_args()
     return args
