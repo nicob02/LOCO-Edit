@@ -123,7 +123,17 @@ def main() -> None:
     P.add_argument("--out_csv", type=Path, required=True)
     P.add_argument("--out_bar", type=Path, required=True)
     P.add_argument("--out_inside_curve", type=Path, default=None)
+    P.add_argument(
+        "--metrics",
+        default="locality,linearity",
+        help=("Comma-separated list of metrics to render in the bar figure: "
+              "'locality', 'linearity', or both. CSV always contains both."),
+    )
     args = P.parse_args()
+    metrics = [m.strip().lower() for m in args.metrics.split(",") if m.strip()]
+    for m in metrics:
+        if m not in {"locality", "linearity"}:
+            raise SystemExit(f"--metrics must be a subset of {{locality,linearity}}; got {m}")
 
     if args.out_csv.parent:
         args.out_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -191,30 +201,49 @@ def main() -> None:
     linearity = np.array([r["linearity_pearson"] for r in rows], dtype=np.float32)
 
     plt.rcParams.update({"font.size": 12})
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4.8))
+    n_panels = len(metrics)
+    fig, axes = plt.subplots(
+        1, n_panels,
+        figsize=(6.0 * n_panels + 1.0, 4.8),
+        squeeze=False,
+    )
     bar_x = np.arange(len(labels))
-    ax1.bar(bar_x, locality, color="#4878d0", edgecolor="black")
-    ax1.set_xticks(bar_x); ax1.set_xticklabels(labels, rotation=20, ha="right")
-    ax1.set_ylabel("locality   (outside / inside change)")
-    ax1.set_title("Locality   (smaller = more local; want < 0.25 like in Phase 1)")
-    ax1.axhline(0.25, ls=":", color="grey")
-    ax1.grid(axis="y", alpha=0.3)
-    for i, v in enumerate(locality):
-        ax1.text(i, v + 0.02, f"{v:.2f}", ha="center", fontsize=10)
 
-    ax2.bar(bar_x, linearity, color="#d62728", edgecolor="black")
-    ax2.set_xticks(bar_x); ax2.set_xticklabels(labels, rotation=20, ha="right")
-    ax2.set_ylabel(r"Pearson($|\lambda|$, inside-change)")
-    ax2.set_title("Linearity   (closer to 1 = more linear; Phase 1 ≈ 0.99)")
-    ax2.set_ylim(-0.05, 1.05)
-    ax2.axhline(1.0, ls=":", color="grey")
-    ax2.grid(axis="y", alpha=0.3)
-    for i, v in enumerate(linearity):
-        ax2.text(i, v + 0.02, f"{v:+.2f}", ha="center", fontsize=10)
+    def _draw_locality(ax):
+        ax.bar(bar_x, locality, color="#4878d0", edgecolor="black")
+        ax.set_xticks(bar_x); ax.set_xticklabels(labels, rotation=20, ha="right")
+        ax.set_ylabel("locality   (outside / inside change)")
+        ax.set_title("Locality   (smaller = more local; want < 0.25 like in Phase 1)")
+        ax.axhline(0.25, ls=":", color="grey")
+        ax.grid(axis="y", alpha=0.3)
+        for i, v in enumerate(locality):
+            ax.text(i, v + 0.02, f"{v:.2f}", ha="center", fontsize=10)
 
+    def _draw_linearity(ax):
+        ax.bar(bar_x, linearity, color="#d62728", edgecolor="black")
+        ax.set_xticks(bar_x); ax.set_xticklabels(labels, rotation=20, ha="right")
+        ax.set_ylabel(r"Pearson($|\lambda|$, inside-change)")
+        ax.set_title("Linearity   (closer to 1 = more linear; Phase 1 ≈ 0.99)")
+        ax.set_ylim(-0.05, 1.05)
+        ax.axhline(1.0, ls=":", color="grey")
+        ax.grid(axis="y", alpha=0.3)
+        for i, v in enumerate(linearity):
+            ax.text(i, v + 0.02, f"{v:+.2f}", ha="center", fontsize=10)
+
+    for k, m in enumerate(metrics):
+        ax = axes[0, k]
+        if m == "locality":
+            _draw_locality(ax)
+        else:
+            _draw_linearity(ax)
+
+    suptitle = (
+        "Locality under attack/defense" if metrics == ["locality"]
+        else "Linearity under attack/defense" if metrics == ["linearity"]
+        else "Locality + linearity under attack/defense"
+    )
     fig.suptitle(
-        f"Locality + linearity under attack/defense  "
-        f"(idx={args.sample_idx}, sem={args.choose_sem})",
+        f"{suptitle}  (idx={args.sample_idx}, sem={args.choose_sem})",
         y=1.02,
     )
     fig.tight_layout()
